@@ -64,7 +64,7 @@ class PicoSim:
                     enc_left=self.enc_left,
                     enc_right=self.enc_right,
                     steer_fb=self.steer_fb,
-                    current_ma=0 if watchdog_tripped else current_ma,
+                    current_ma=0 if self._effective_stop else current_ma,
                     fault_status=fault,
                     cmd_age_ms=cmd_age_ms,
                 )
@@ -83,6 +83,7 @@ class PicoSim:
         effective_stop = watchdog_tripped or self.last_control["stop"] or (
             self.last_control["mode"] == framing.MODE_DISABLED
         )
+        self._effective_stop = effective_stop # expose for run_forever to use
         drive = 0 if effective_stop else self.last_control["drive_cmd"]
         steer_target = 0 if effective_stop else self.last_control["steer_cmd"]
 
