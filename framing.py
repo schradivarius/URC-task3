@@ -42,7 +42,8 @@ FAULT_OVER_CURRENT = 0x02
 FAULT_ESTOP_ACTIVE = 0x04
 FAULT_ENCODER_FAULT = 0x08
 FAULT_UNDERVOLTAGE = 0x10
-FAULT_FIRMWARE_FAULT = 0x20   # main loop raised; see feather_main.py safe_stop()
+FAULT_FIRMWARE_FAULT = 0x20   # boot followed a watchdog reset; see
+                              # feather_main.detect_boot_fault()
 
 FAULT_NAMES = [
     (FAULT_COMM_TIMEOUT, "COMM_TIMEOUT"),

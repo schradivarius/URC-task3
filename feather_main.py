@@ -30,7 +30,12 @@ SAFETY STRUCTURE
      Without this, a firmware exception leaves the PWM registers holding
      their last value -- i.e. a runaway rover with a dead controller.
   2. Exception guard. Any exception escaping the loop body calls safe_stop()
-     BEFORE anything else, then reports FAULT_FIRMWARE_FAULT and re-raises.
+     BEFORE anything else, then re-raises so the watchdog completes the reset.
+     It cannot report the fault itself -- the board is about to reset -- so
+     instead the NEXT boot inspects microcontroller.cpu.reset_reason and
+     raises FAULT_FIRMWARE_FAULT in its telemetry (see detect_boot_fault).
+     Otherwise a watchdog reset is invisible to the onboard computer except
+     as a brief gap in telemetry.
   3. Command watchdog. No valid CONTROL frame within WATCHDOG_TIMEOUT_MS
      forces a stop and raises FAULT_COMM_TIMEOUT.
   4. Encoder counters are wrapped into int32 range before packing. An
@@ -181,6 +186,28 @@ def set_motor_outputs(drive_cmd, steer_cmd, effective_stop):
     pass
 
 
+def detect_boot_fault():
+    """Fault bits to report for the whole of this run, based on why the board
+    last reset.
+
+    A watchdog reset means the previous run of this firmware stopped feeding
+    the watchdog -- a hang or an unhandled exception. The onboard computer
+    needs to know that happened: telemetry resuming normally after an
+    unexplained gap otherwise looks like a transient link problem rather than
+    a controller that restarted mid-drive.
+
+    The bit latches for the session. It clears only on a clean power-on,
+    because "this controller rebooted unexpectedly" stays true for as long as
+    that boot lasts.
+    """
+    try:
+        if microcontroller.cpu.reset_reason == microcontroller.ResetReason.WATCHDOG:
+            return framing.FAULT_FIRMWARE_FAULT
+    except (AttributeError, NotImplementedError):
+        pass  # port does not expose a reset reason; nothing to report
+    return 0
+
+
 def safe_stop():
     """Unconditional stop. Called from the exception guard, so it must not
     assume any particular state and must not raise."""
@@ -197,7 +224,7 @@ def safe_stop():
 # with mcu_sim.py. This function is only the hardware wiring around it.
 # ---------------------------------------------------------------------------
 
-def run(link, led, watchdog):
+def run(link, led, watchdog, boot_faults=0):
     ctl = controller.RoverController(
         now_ms=now_ms,
         watchdog_timeout_ms=WATCHDOG_TIMEOUT_MS,
@@ -226,6 +253,7 @@ def run(link, led, watchdog):
                 steer_fb=steer_fb,
                 current_ca=current_ca,
                 sensor_faults=sensor_faults,
+                extra_faults=boot_faults,
                 now=now,
             ))
             led.value = not led.value
@@ -252,11 +280,14 @@ def main():
     except (ImportError, AttributeError, NotImplementedError, ValueError):
         watchdog = None
 
-    print("rover firmware up: link = %s, hw watchdog = %s"
-          % (link_desc, "on" if watchdog else "UNAVAILABLE"))
+    boot_faults = detect_boot_fault()
+
+    print("rover firmware up: link = %s, hw watchdog = %s%s"
+          % (link_desc, "on" if watchdog else "UNAVAILABLE",
+             ", RECOVERED FROM WATCHDOG RESET" if boot_faults else ""))
 
     try:
-        run(link, led, watchdog)
+        run(link, led, watchdog, boot_faults)
     except Exception:
         # Stop the drives FIRST, before logging or anything else that could
         # itself fail. Then let it propagate: with the hardware watchdog armed

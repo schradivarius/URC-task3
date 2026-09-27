@@ -263,3 +263,79 @@ class TestFirmwareStartup(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBootFaultReporting(unittest.TestCase):
+    """A watchdog reset must not be invisible to the onboard computer.
+
+    The exception guard cannot report the fault itself -- the board resets
+    immediately after it runs -- so the next boot inspects the reset reason
+    and raises FAULT_FIRMWARE_FAULT. Without this, telemetry resuming after an
+    unexplained gap looks like a transient link problem rather than a
+    controller that restarted mid-drive.
+    """
+
+    def setUp(self):
+        feather_main._sim_enc_left = 0
+        feather_main._sim_enc_right = 0
+        self._cpu = getattr(sys.modules["microcontroller"], "cpu", None)
+
+    def tearDown(self):
+        import microcontroller
+        if self._cpu is not None:
+            microcontroller.cpu = self._cpu
+        elif hasattr(microcontroller, "cpu"):
+            del microcontroller.cpu
+
+    def set_reset_reason(self, reason):
+        import microcontroller
+        import types
+        if reason is None:
+            if hasattr(microcontroller, "cpu"):
+                del microcontroller.cpu
+        else:
+            microcontroller.cpu = types.SimpleNamespace(reset_reason=reason)
+
+    def test_clean_power_on_reports_no_firmware_fault(self):
+        self.set_reset_reason("POWER_ON")
+        self.assertEqual(feather_main.detect_boot_fault(), 0)
+
+    def test_watchdog_reset_is_detected(self):
+        self.set_reset_reason("WATCHDOG")
+        self.assertEqual(feather_main.detect_boot_fault(),
+                         framing.FAULT_FIRMWARE_FAULT)
+
+    def test_missing_reset_reason_is_tolerated(self):
+        """A port that does not expose a reset reason must not crash the boot."""
+        self.set_reset_reason(None)
+        self.assertEqual(feather_main.detect_boot_fault(), 0)
+
+    def test_firmware_fault_appears_in_every_telemetry_frame(self):
+        """The bit latches for the session: the reboot stays true all run."""
+        link = ScriptedLink(b"", max_polls=30)
+        with self.assertRaises(LoopBreak):
+            feather_main.run(link, fresh_led(), None,
+                             boot_faults=framing.FAULT_FIRMWARE_FAULT)
+        frames = link.telemetry()
+        self.assertGreater(len(frames), 0)
+        for frame in frames:
+            self.assertIn("FIRMWARE_FAULT",
+                          framing.fault_names(frame["fault_status"]))
+
+    def test_firmware_fault_coexists_with_other_faults(self):
+        """It must not mask the comm timeout that is also genuinely present."""
+        link = ScriptedLink(b"", max_polls=30)
+        with self.assertRaises(LoopBreak):
+            feather_main.run(link, fresh_led(), None,
+                             boot_faults=framing.FAULT_FIRMWARE_FAULT)
+        names = framing.fault_names(link.telemetry()[0]["fault_status"])
+        self.assertIn("FIRMWARE_FAULT", names)
+        self.assertIn("COMM_TIMEOUT", names)
+
+    def test_clean_boot_reports_no_firmware_fault_in_telemetry(self):
+        link = ScriptedLink(b"", max_polls=30)
+        with self.assertRaises(LoopBreak):
+            feather_main.run(link, fresh_led(), None, boot_faults=0)
+        for frame in link.telemetry():
+            self.assertNotIn("FIRMWARE_FAULT",
+                             framing.fault_names(frame["fault_status"]))

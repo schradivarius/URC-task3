@@ -176,7 +176,7 @@ to a minute ago. Those call for different operator responses.
 | `0x04` | `ESTOP_ACTIVE` | Hardware or software E-stop engaged |
 | `0x08` | `ENCODER_FAULT` | Encoder reading invalid or stalled |
 | `0x10` | `UNDERVOLTAGE` | Supply voltage low (placeholder, not wired up yet) |
-| `0x20` | `FIRMWARE_FAULT` | Main loop raised an exception; see section 6.2 |
+| `0x20` | `FIRMWARE_FAULT` | This boot followed a watchdog reset, i.e. the previous run hung or raised; see section 6.2 |
 | `0x40`–`0x80` | *reserved* | Free for future use |
 
 `cmd_age_ms` is the field the task calls out explicitly, and it is the
@@ -266,6 +266,19 @@ Three layers now cover it:
    *first*, before logging or anything else that could itself fail, then
    re-raises so the watchdog completes the reset. `safe_stop()` is written to
    never raise.
+
+   The guard cannot report the fault itself, because the board resets moments
+   after it runs. So the **next** boot reads
+   `microcontroller.cpu.reset_reason` and, if the last reset was
+   `WATCHDOG`, raises `FIRMWARE_FAULT` in every TELEMETRY frame for that whole
+   session (`detect_boot_fault()`), and says so in the startup banner.
+   Without this a watchdog reset is invisible to the onboard computer except
+   as a brief gap in telemetry, which looks like a transient link problem
+   rather than a controller that restarted mid-drive. The bit latches for the
+   session and clears only on a clean power-on, because "this controller
+   rebooted unexpectedly" stays true for as long as that boot lasts. A port
+   that exposes no reset reason degrades to reporting nothing rather than
+   failing to boot.
 3. **Bounded counters.** Encoder accumulators pass through
    `framing.wrap_i32()`, so they wrap rather than overflow. Counts are
    relative anyway; the onboard computer handles rollover when differencing.
@@ -279,7 +292,7 @@ not tuned against any measured actuator response.
 ```
 python3 demo.py                              # the three-part demonstration
 python3 jetson_test.py --mock --duration 5   # the host harness, mock link
-python3 -m unittest discover -s tests -v     # 67 tests, no dependencies
+python3 -m unittest discover -s tests -v     # 73 tests, no dependencies
 ```
 
 **Part A — CRC catches corruption and the parser resyncs.** A CONTROL frame is
@@ -427,7 +440,7 @@ there — harmless, and worth keeping so there is one codec.
 | `mock_link.py` | Jetson (CPython) | In-memory duplex loopback with fault injection |
 | `mcu_sim.py` | Jetson (CPython) | Demo-only fake plant driving the real `controller.py` |
 | `demo.py` | Jetson (CPython) | The three-part demonstration in section 7 |
-| `tests/` | Jetson (CPython) | 67 tests; stdlib `unittest`, no dependencies |
+| `tests/` | Jetson (CPython) | 73 tests; stdlib `unittest`, no dependencies |
 
 ### 10.1 Host setup
 

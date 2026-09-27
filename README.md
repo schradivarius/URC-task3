@@ -11,7 +11,7 @@ fail-safes. Full specification: **[PROTOCOL.md](PROTOCOL.md)**.
 
 | | |
 |---|---|
-| Protocol, parser, safety logic | Implemented, 67 tests passing |
+| Protocol, parser, safety logic | Implemented, 73 tests passing |
 | Firmware | Written and tested against stubbed hardware |
 | **Validated on the real board** | **Not yet — see [Known gaps](#known-gaps)** |
 
@@ -26,7 +26,7 @@ standard library (Python 3.9+). `pip` is needed only to talk to real hardware.
 git clone https://github.com/schradivarius/URC-task3.git
 cd URC-task3
 
-python3 -m unittest discover -s tests -v   # 67 tests, ~0.5s
+python3 -m unittest discover -s tests -v   # 73 tests, ~0.7s
 python3 demo.py                            # the message-exchange demonstration
 python3 jetson_test.py --mock --duration 5 # live host harness, no hardware
 ```
@@ -39,7 +39,7 @@ If all three succeed, your environment is good.
 
 ```bash
 python3 -m unittest discover -s tests -v   # verbose: names every test
-python3 -m unittest discover -s tests      # quiet: just "Ran 67 tests ... OK"
+python3 -m unittest discover -s tests      # quiet: just "Ran 73 tests ... OK"
 ```
 
 Works from the repository root or from inside `tests/`.
@@ -48,7 +48,7 @@ Works from the repository root or from inside `tests/`.
 
 ```bash
 python3 -m unittest tests.test_protocol -v      # wire format + safety logic (45)
-python3 -m unittest tests.test_firmware -v      # the flashed firmware (17)
+python3 -m unittest tests.test_firmware -v      # the flashed firmware (23)
 python3 -m unittest tests.test_integration -v   # end-to-end over a mock link (5)
 
 python3 -m unittest tests.test_protocol.TestControllerSafety -v
@@ -72,6 +72,7 @@ nothing installed.
 | `TestFirmwareLoop` | 8 | Does the main loop behave while running? |
 | `TestFirmwareSensorStubs` | 3 | Is the hardware boundary safe? |
 | `TestFirmwareStartup` | 6 | Do the boot and fault paths work? |
+| `TestBootFaultReporting` | 6 | Does a watchdog reset get reported to the Jetson? |
 | `TestEndToEnd` | 5 | Do both sides actually talk to each other? |
 
 Every test is named for the failure it prevents, so the reason it exists
@@ -176,7 +177,7 @@ rover firmware up: link = usb_cdc.data (second CDC endpoint), hw watchdog = on
 | `mock_link.py` | Host | In-memory duplex loopback with fault injection |
 | `mcu_sim.py` | Host | Demo-only fake plant driving the real `controller.py` |
 | `demo.py` | Host | The three-part demonstration |
-| `tests/` | Host | 67 tests, no dependencies |
+| `tests/` | Host | 73 tests, no dependencies |
 
 `framing.py` and `controller.py` run on **both** sides. Nothing
 safety-critical is duplicated, and `TestNoDuplicatedProtocol` fails the build

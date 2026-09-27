@@ -69,9 +69,14 @@ class FakeWatchdog:
         self.feeds += 1
 
 
-def install(usb_data=None, watchdog_available=True):
+def install(usb_data=None, watchdog_available=True, reset_reason="POWER_ON"):
     """Insert the fake modules into sys.modules. Returns the fake watchdog so
-    tests can assert it was configured and fed."""
+    tests can assert it was configured and fed.
+
+    reset_reason models microcontroller.cpu.reset_reason: pass "WATCHDOG" to
+    simulate booting after a watchdog reset, or None to simulate a port that
+    does not expose one.
+    """
     board = types.ModuleType("board")
     board.LED = FakePin("GP13")   # Feather RP2040 RFM9x onboard red LED
     board.TX = FakePin("GP0")
@@ -86,6 +91,11 @@ def install(usb_data=None, watchdog_available=True):
 
     fake_wd = FakeWatchdog()
     microcontroller = types.ModuleType("microcontroller")
+    microcontroller.ResetReason = types.SimpleNamespace(
+        POWER_ON="POWER_ON", WATCHDOG="WATCHDOG", SOFTWARE="SOFTWARE",
+        RESET_PIN="RESET_PIN", BROWNOUT="BROWNOUT")
+    if reset_reason is not None:
+        microcontroller.cpu = types.SimpleNamespace(reset_reason=reset_reason)
     watchdog_mod = types.ModuleType("watchdog")
     if watchdog_available:
         microcontroller.watchdog = fake_wd
