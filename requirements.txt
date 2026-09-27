@@ -1,0 +1,15 @@
+# Host-side (Jetson / dev laptop) dependencies.
+#
+# The test suite and the mock-link demo need NOTHING beyond the Python
+# standard library -- deliberately, so any team member can run
+#     python3 -m unittest discover -s tests
+#     python3 demo.py
+# on a fresh machine with no install step.
+#
+# pyserial is required only to talk to real hardware:
+#     python3 jetson_test.py --port /dev/ttyACM1
+pyserial>=3.5
+
+# The firmware itself has no pip dependencies. It runs on CircuitPython and
+# imports only the shared modules in this repo (framing.py, controller.py)
+# plus CircuitPython's builtins. See feather_main.py for deployment.
