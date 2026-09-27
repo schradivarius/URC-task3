@@ -62,11 +62,11 @@ class MockEndpoint:
 
 
 def make_pair(corrupt_rate=0.0, drop_rate=0.0, latency_s=0.0):
-    """Returns (jetson_side, pico_side) MockEndpoints wired to each other.
+    """Returns (jetson_side, mcu_side) MockEndpoints wired to each other.
     corrupt_rate/drop_rate/latency_s apply to bytes written by either side,
     for exercising the CRC/resync/watchdog paths under simulated line noise."""
     a_to_b = queue.Queue()
     b_to_a = queue.Queue()
     jetson_side = MockEndpoint(b_to_a, a_to_b, corrupt_rate, drop_rate, latency_s)
-    pico_side = MockEndpoint(a_to_b, b_to_a, corrupt_rate, drop_rate, latency_s)
-    return jetson_side, pico_side
+    mcu_side = MockEndpoint(a_to_b, b_to_a, corrupt_rate, drop_rate, latency_s)
+    return jetson_side, mcu_side
