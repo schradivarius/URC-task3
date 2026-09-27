@@ -24,6 +24,16 @@ jobs:
       - name: Protocol, firmware and integration tests
         run: python -m unittest discover -s tests -v
 
+      - name: Each test module directly
+        # `unittest discover` puts tests/ on sys.path; the direct module form
+        # does not. Running both ways catches a test helper that is only
+        # importable under discover -- which is how a broken sibling import
+        # once reached the README while CI stayed green.
+        run: |
+          python -m unittest tests.test_protocol
+          python -m unittest tests.test_firmware
+          python -m unittest tests.test_integration
+
       - name: Message-exchange demonstration
         run: python demo.py
 

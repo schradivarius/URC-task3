@@ -14,9 +14,17 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Two entries, both needed:
+#   the repo root  -> framing / controller / feather_main
+#   this directory -> fake_hardware, a sibling test helper
+# `unittest discover -s tests` happens to add this directory itself, but
+# `python3 -m unittest tests.test_firmware` does not, so relying on that
+# would make the module importable one way and not the other.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(_HERE))
+sys.path.insert(0, _HERE)
 
-import fake_hardware  # noqa: E402  (same directory)
+import fake_hardware  # noqa: E402  (sibling module, see sys.path note above)
 
 FAKE_WATCHDOG = fake_hardware.install()
 
