@@ -22,3 +22,4 @@ htmlcov/
 # Embedded dev artifacts
 *.uf2
 .mpy_cache/
+tests/cpp/build/

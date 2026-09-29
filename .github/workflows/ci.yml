@@ -7,39 +7,44 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  firmware-core:
+    name: C++ firmware core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests (built with -Werror)
+        run: make test-cpp
+
+      - name: Build with clang as well
+        # A second compiler catches undefined behaviour and portability
+        # mistakes that one toolchain happens to tolerate. The Teensy build
+        # uses yet another (arm-none-eabi-gcc), so agreement here is a
+        # meaningful signal.
+        run: make -C tests/cpp clean && CXX=clang++ make -C tests/cpp test
+
+      - name: Sanitizers
+        # Signed overflow in the encoder accumulators would be undefined
+        # behaviour, not a wrap. UBSan proves wrapI32 actually avoids it.
+        run: |
+          make -C tests/cpp clean
+          CXXFLAGS="-std=c++17 -Wall -Wextra -Werror -O1 -g -fsanitize=undefined,address -fno-sanitize-recover=all" \
+            make -C tests/cpp test
+
+  host:
+    name: Host side (Jetson)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # 3.9 is the floor we support so an older Jetson image still works.
         python-version: ["3.9", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Protocol, firmware and integration tests
-        run: python -m unittest discover -s tests -v
-
-      - name: Each test module directly
-        # `unittest discover` puts tests/ on sys.path; the direct module form
-        # does not. Running both ways catches a test helper that is only
-        # importable under discover -- which is how a broken sibling import
-        # once reached the README while CI stayed green.
-        run: |
-          python -m unittest tests.test_protocol
-          python -m unittest tests.test_firmware
-          python -m unittest tests.test_integration
-
+      - name: Host tests (golden vectors + integration against the real firmware)
+        run: make test-host
       - name: Message-exchange demonstration
-        run: python demo.py
-
-      - name: Mock-link harness end to end
-        run: python jetson_test.py --mock --duration 3
-
+        run: make demo
       - name: Byte-compile every module
-        # Catches syntax errors in files no test imports.
-        run: python -m compileall -q . -x '\.git'
+        run: python -m compileall -q host tools tests
