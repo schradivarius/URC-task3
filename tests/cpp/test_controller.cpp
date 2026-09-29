@@ -1,0 +1,252 @@
+// test_controller.cpp -- safety state machine tests.
+//
+// Start a safety review here. Every test drives a FAKE CLOCK the test advances
+// by hand, so watchdog timing is exact and deterministic rather than
+// sleep-dependent -- a flaky safety test gets ignored, which is worse than no
+// safety test.
+
+#include "../../firmware/src/rover_controller.h"
+#include "test_framework.h"
+
+using namespace rover;
+
+// --- fake clock -------------------------------------------------------------
+
+static uint32_t g_now = 0;
+static uint32_t fakeMillis() { return g_now; }
+static void advance(uint32_t ms) { g_now += ms; }   // uint32 wraps naturally
+
+static RoverController freshController(uint32_t start_ms = 0) {
+    g_now = start_ms;
+    return RoverController(fakeMillis, 300, 50);
+}
+
+static bool sendControl(RoverController& ctl, int16_t drive, int16_t steer,
+                        uint8_t mode, uint8_t stop) {
+    ControlMsg m = {drive, steer, mode, stop};
+    uint8_t buf[8] = {0};
+    uint8_t dlc = encodeControl(m, buf);
+    return ctl.ingestFrame(CAN_ID_CONTROL, buf, dlc);
+}
+
+// --- boot and basic release -------------------------------------------------
+
+static void boots_stopped_and_disabled() {
+    // Before any command arrives the rover must not be able to move.
+    RoverController ctl = freshController();
+    CHECK(ctl.effectiveStop());
+    CHECK(ctl.watchdogTripped());
+    CHECK_EQ(ctl.cmdAgeMs(), CMD_AGE_UNKNOWN);
+    CHECK_EQ(ctl.lastControl().mode, MODE_DISABLED);
+    int16_t d, s; ctl.commandedOutputs(d, s);
+    CHECK_EQ(d, 0); CHECK_EQ(s, 0);
+}
+
+static void valid_control_releases_the_stop() {
+    RoverController ctl = freshController();
+    CHECK(sendControl(ctl, 500, 100, MODE_MANUAL, 0));
+    CHECK(!ctl.effectiveStop());
+    int16_t d, s; ctl.commandedOutputs(d, s);
+    CHECK_EQ(d, 500); CHECK_EQ(s, 100);
+}
+
+// --- watchdog ---------------------------------------------------------------
+
+static void watchdog_trips_exactly_at_the_boundary() {
+    RoverController ctl = freshController();
+    sendControl(ctl, 500, 0, MODE_MANUAL, 0);
+    advance(299);
+    CHECK(!ctl.watchdogTripped());          // one millisecond early
+    advance(1);
+    CHECK(ctl.watchdogTripped());           // exactly on time
+    CHECK(ctl.effectiveStop());
+    int16_t d, s; ctl.commandedOutputs(d, s);
+    CHECK_EQ(d, 0); CHECK_EQ(s, 0);
+}
+
+static void watchdog_clears_when_commands_resume() {
+    RoverController ctl = freshController();
+    sendControl(ctl, 500, 0, MODE_MANUAL, 0);
+    advance(500);
+    CHECK(ctl.effectiveStop());
+    sendControl(ctl, 500, 0, MODE_MANUAL, 0);
+    CHECK(!ctl.effectiveStop());            // recovers on its own
+}
+
+// --- THE NEW HAZARD: millis() wraps every ~49.7 days ------------------------
+
+static void watchdog_is_correct_across_millis_wraparound() {
+    // CircuitPython's monotonic_ns() never wrapped, so the Python version was
+    // safe by construction. Arduino millis() is uint32_t and wraps. This test
+    // starts 256 ms before the wrap and crosses it.
+    //
+    // It passes because elapsed time is computed as an unsigned SUBTRACTION
+    // (now - then), which is correct modulo 2^32. It would FAIL if anyone
+    // rewrote the check as a timestamp comparison (now >= then + timeout),
+    // which overflows and reports "not yet" forever.
+    RoverController ctl = freshController(0xFFFFFF00u);
+    sendControl(ctl, 500, 0, MODE_MANUAL, 0);
+
+    // CRITICAL intermediate check, BEFORE the clock wraps. This is the window
+    // where the naive version breaks and the correct one does not: the naive
+    // deadline (last + 300) has itself wrapped to a tiny number, so the huge
+    // pre-wrap `now` compares greater than it and reports a timeout that has
+    // not happened. Without this assertion the whole test passes against the
+    // buggy implementation -- verified by building one and running it.
+    advance(80);
+    CHECK(g_now > 0xFFFFFF00u);              // still pre-wrap
+    CHECK(!ctl.watchdogTripped());           // 80ms elapsed, nowhere near 300
+    CHECK_EQ(ctl.cmdAgeMs(), 80);
+
+    advance(219);                            // 299 total; clock now past the wrap
+    CHECK(g_now < 0xFFFFFF00u);              // confirm it really did wrap
+    CHECK(!ctl.watchdogTripped());
+    CHECK_EQ(ctl.cmdAgeMs(), 299);
+
+    advance(1);
+    CHECK(ctl.watchdogTripped());
+    CHECK_EQ(ctl.cmdAgeMs(), 300);
+}
+
+static void telemetry_pacing_is_correct_across_wraparound() {
+    RoverController ctl = freshController(0xFFFFFFF0u);
+    CHECK(ctl.telemetryDue());               // first call is due immediately
+    CHECK(!ctl.telemetryDue());
+    advance(50);                             // crosses the wrap
+    CHECK(g_now < 0xFFFFFFF0u);
+    CHECK(ctl.telemetryDue());
+}
+
+// --- the other two stop triggers --------------------------------------------
+
+static void explicit_stop_flag_wins_in_any_mode() {
+    const uint8_t modes[] = {MODE_MANUAL, MODE_AUTONOMOUS};
+    for (uint8_t mode : modes) {
+        RoverController ctl = freshController();
+        sendControl(ctl, 1000, 500, mode, 1);
+        CHECK(ctl.effectiveStop());
+        int16_t d, s; ctl.commandedOutputs(d, s);
+        CHECK_EQ(d, 0); CHECK_EQ(s, 0);
+    }
+}
+
+static void stop_is_releasable_without_a_mode_change() {
+    // stop is a separate field rather than a third mode value precisely so an
+    // e-stop can be asserted AND released without a mode round trip.
+    RoverController ctl = freshController();
+    sendControl(ctl, 500, 0, MODE_MANUAL, 1);
+    CHECK(ctl.effectiveStop());
+    sendControl(ctl, 500, 0, MODE_MANUAL, 0);
+    CHECK(!ctl.effectiveStop());
+}
+
+static void disabled_mode_forces_stop_at_full_throttle() {
+    RoverController ctl = freshController();
+    sendControl(ctl, 1000, 1000, MODE_DISABLED, 0);
+    CHECK(ctl.effectiveStop());
+    int16_t d, s; ctl.commandedOutputs(d, s);
+    CHECK_EQ(d, 0); CHECK_EQ(s, 0);
+}
+
+// --- what must NOT refresh the watchdog -------------------------------------
+
+static void wrong_dlc_does_not_refresh_the_watchdog() {
+    // A peer on a mismatched protocol version must not keep the rover alive
+    // while sending commands it never actually understood.
+    RoverController ctl = freshController();
+    sendControl(ctl, 500, 0, MODE_MANUAL, 0);
+    advance(290);
+    uint8_t buf[8] = {0};
+    CHECK(!ctl.ingestFrame(CAN_ID_CONTROL, buf, 4));   // wrong DLC
+    advance(10);
+    CHECK(ctl.watchdogTripped());
+    CHECK_EQ(ctl.framesIgnored(), 1u);
+}
+
+static void foreign_can_id_does_not_refresh_the_watchdog() {
+    // A shared bus carries motor-controller and payload traffic too. None of
+    // it may count as a command from the Jetson.
+    RoverController ctl = freshController();
+    sendControl(ctl, 500, 0, MODE_MANUAL, 0);
+    advance(290);
+    uint8_t buf[8] = {0};
+    encodeControl({999, 0, MODE_MANUAL, 0}, buf);
+    CHECK(!ctl.ingestFrame(0x321, buf, CONTROL_DLC));  // someone else's frame
+    advance(10);
+    CHECK(ctl.watchdogTripped());
+    CHECK_EQ(ctl.lastControl().drive_cmd, 500);        // not overwritten
+}
+
+// --- telemetry --------------------------------------------------------------
+
+static void telemetry_reports_comm_timeout_and_age() {
+    RoverController ctl = freshController();
+    sendControl(ctl, 500, 0, MODE_MANUAL, 0);
+    advance(400);
+    TelemetryStatus st = ctl.buildStatus(3, 0);
+    CHECK(st.fault_status & FAULT_COMM_TIMEOUT);
+    CHECK_EQ(st.cmd_age_ms, 400);
+}
+
+static void age_is_unknown_before_the_first_command() {
+    RoverController ctl = freshController();
+    TelemetryStatus st = ctl.buildStatus(0, 0);
+    CHECK_EQ(st.cmd_age_ms, CMD_AGE_UNKNOWN);
+    CHECK(st.fault_status & FAULT_COMM_TIMEOUT);
+}
+
+static void sensor_faults_survive_alongside_comm_timeout() {
+    // A comm fault must not mask a genuine over-current fault.
+    RoverController ctl = freshController();
+    TelemetryStatus st = ctl.buildStatus(0, 0, FAULT_OVER_CURRENT);
+    CHECK(st.fault_status & FAULT_OVER_CURRENT);
+    CHECK(st.fault_status & FAULT_COMM_TIMEOUT);
+}
+
+static void firmware_fault_bit_is_carried_through() {
+    RoverController ctl = freshController();
+    sendControl(ctl, 100, 0, MODE_MANUAL, 0);
+    TelemetryStatus st = ctl.buildStatus(0, 0, 0, FAULT_FIRMWARE_FAULT);
+    CHECK(st.fault_status & FAULT_FIRMWARE_FAULT);
+    CHECK(!(st.fault_status & FAULT_COMM_TIMEOUT));   // link is healthy
+}
+
+static void telemetry_paces_at_the_configured_period() {
+    RoverController ctl = freshController();
+    CHECK(ctl.telemetryDue());
+    CHECK(!ctl.telemetryDue());
+    advance(50);
+    CHECK(ctl.telemetryDue());
+}
+
+static void telemetry_does_not_burst_after_a_stall() {
+    // After a long stall the scheduler must resync to now, not fire once per
+    // missed period in a burst that floods the bus.
+    RoverController ctl = freshController();
+    ctl.telemetryDue();
+    advance(5000);                     // a 5 second stall
+    CHECK(ctl.telemetryDue());
+    CHECK(!ctl.telemetryDue());        // exactly one, not a hundred
+}
+
+int main() {
+    std::printf("test_controller\n");
+    RUN_TEST(boots_stopped_and_disabled);
+    RUN_TEST(valid_control_releases_the_stop);
+    RUN_TEST(watchdog_trips_exactly_at_the_boundary);
+    RUN_TEST(watchdog_clears_when_commands_resume);
+    RUN_TEST(watchdog_is_correct_across_millis_wraparound);
+    RUN_TEST(telemetry_pacing_is_correct_across_wraparound);
+    RUN_TEST(explicit_stop_flag_wins_in_any_mode);
+    RUN_TEST(stop_is_releasable_without_a_mode_change);
+    RUN_TEST(disabled_mode_forces_stop_at_full_throttle);
+    RUN_TEST(wrong_dlc_does_not_refresh_the_watchdog);
+    RUN_TEST(foreign_can_id_does_not_refresh_the_watchdog);
+    RUN_TEST(telemetry_reports_comm_timeout_and_age);
+    RUN_TEST(age_is_unknown_before_the_first_command);
+    RUN_TEST(sensor_faults_survive_alongside_comm_timeout);
+    RUN_TEST(firmware_fault_bit_is_carried_through);
+    RUN_TEST(telemetry_paces_at_the_configured_period);
+    RUN_TEST(telemetry_does_not_burst_after_a_stall);
+    return testing::summary("test_controller");
+}

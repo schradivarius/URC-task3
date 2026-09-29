@@ -1,15 +1,15 @@
-# Host-side (Jetson / dev laptop) dependencies.
+# Host-side (Jetson) dependencies.
 #
-# The test suite and the mock-link demo need NOTHING beyond the Python
-# standard library -- deliberately, so any team member can run
-#     python3 -m unittest discover -s tests
-#     python3 demo.py
-# on a fresh machine with no install step.
+# NOTHING is required for the test suite or the demo. `make test` and
+# `make demo` need only a C++17 compiler and Python 3.9+, deliberately: the
+# simulator is compiled from firmware/src rather than pip-installed, so it
+# cannot drift from the firmware.
 #
-# pyserial is required only to talk to real hardware:
-#     python3 jetson_test.py --port /dev/ttyACM1
-pyserial>=3.5
+# python-can is needed ONLY to talk to a real (or virtual) CAN interface:
+#     python3 host/jetson_test.py --channel can0
+python-can>=4.0
 
-# The firmware itself has no pip dependencies. It runs on CircuitPython and
-# imports only the shared modules in this repo (framing.py, controller.py)
-# plus CircuitPython's builtins. See feather_main.py for deployment.
+# The firmware has no pip dependencies. It needs two Arduino libraries,
+# installed through the Arduino IDE Library Manager:
+#     FlexCAN_T4   https://github.com/tonton81/FlexCAN_T4
+#     WDT_T4       https://github.com/tonton81/WDT_T4
