@@ -85,6 +85,9 @@ status.
 asserted **and released** without a mode round trip. It takes effect on the
 control cycle it arrives — there is no coast frame.
 
+CONTROL frames not in accepted modes will be ignored by both Jetson and Teensy. 
+Rejected frames will keep rover operating under previous command received, and if no valid frames arrive after 300 ms (last_ctonrol_ms) it stops and reports COMM_TIMEOUT
+
 **`mode` is validated, and an undefined value stops the rover.** The field is a
 uint8, so it carries 256 possible values where three are defined. Two separate
 questions follow, and conflating them was [issue #4](https://github.com/schradivarius/URC-task3/issues/4):
