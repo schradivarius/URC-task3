@@ -138,6 +138,8 @@ def decode_control(payload):
     # An undefined mode means the sender disagrees with us about the protocol,
     # exactly like a wrong DLC. Reject the frame rather than returning a value
     # the caller cannot reason about. Mirrors decodeControl() in C++.
+    if mode not in (MODE_DISABLED, MODE_MANUAL, MODE_AUTONOMOUS):
+        return None
     if not is_known_mode(mode):
         return None
     return {"drive_cmd": drive, "steer_cmd": steer, "mode": mode, "stop": bool(stop)}
