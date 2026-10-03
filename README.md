@@ -11,7 +11,7 @@ specification: **[PROTOCOL.md](PROTOCOL.md)**.
 
 | | |
 |---|---|
-| Protocol, safety logic, firmware | Implemented, **39 tests** passing |
+| Protocol, safety logic, firmware | Implemented, **56 tests** passing |
 | Cross-language codec | Pinned byte-for-byte between C++ and Python |
 | **Validated on real hardware** | **Not yet — see [Known gaps](#known-gaps)** |
 
@@ -27,7 +27,7 @@ than mocking them, so there is no dependency to manage.
 git clone https://github.com/schradivarius/URC-task3.git
 cd URC-task3
 
-make test     # 28 C++ tests + 11 host tests
+make test     # 38 C++ tests + 18 host tests
 make demo     # no-hardware message-exchange demonstration
 ```
 
@@ -55,8 +55,8 @@ tools/
   rover_sim.cpp                simulator: REAL controller, fake plant
   golden_vectors.cpp           emits vectors for cross-language pinning
 
-tests/cpp/                   28 tests — firmware core
-tests/host/                  11 tests — golden vectors + integration
+tests/cpp/                   38 tests — firmware core
+tests/host/                  18 tests — golden vectors + integration
 ```
 
 The two files under `firmware/src/` have **no Arduino dependency and no
@@ -76,10 +76,10 @@ make test-host   # host side only — compiles the C++ core
 
 | Suite | Tests | Answers |
 |---|---:|---|
-| `tests/cpp/test_protocol.cpp` | 11 | Does the wire format encode and decode correctly? |
-| `tests/cpp/test_controller.cpp` | 17 | **Does the rover stop when it should?** |
-| `tests/host/test_golden_vectors.py` | 5 | Do C++ and Python agree byte-for-byte? |
-| `tests/host/test_integration.py` | 6 | Do both ends actually talk to each other? |
+| `tests/cpp/test_protocol.cpp` | 15 | Does the wire format encode and decode correctly? |
+| `tests/cpp/test_controller.cpp` | 23 | **Does the rover stop when it should?** |
+| `tests/host/test_golden_vectors.py` | 7 | Do C++ and Python agree byte-for-byte? |
+| `tests/host/test_integration.py` | 11 | Do both ends actually talk to each other? |
 
 Every test is named for the failure it prevents, so the reason it exists
 outlives anyone's memory of writing it. **Start a safety review at
@@ -93,6 +93,9 @@ implementation, rather than merely assumed to work:
 - `test_python_encoder_matches_cpp_byte_for_byte` — fails against an injected
   endianness flip
 - `wrong_dlc_does_not_refresh_the_watchdog` — the version-mismatch guard
+- `undefined_mode_does_not_permit_motion` — fails against the pre-fix
+  `mode == MODE_DISABLED` check, which permitted full throttle on any
+  undefined mode ([issue #4](https://github.com/schradivarius/URC-task3/issues/4))
 
 CI additionally builds with **clang** as a second toolchain and runs the suite
 under **UBSan + ASan**, because signed overflow in the encoder accumulators

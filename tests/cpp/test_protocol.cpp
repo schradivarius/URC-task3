@@ -110,6 +110,60 @@ static void control_outranks_telemetry_on_the_bus() {
     CHECK(CAN_ID_CONTROL > 0x000);
 }
 
+// --- mode validation (issue #4) ---------------------------------------------
+
+static void mode_predicates_cover_all_256_values() {
+    // REGRESSION, issue #4. `mode` is a uint8: 256 values, 3 defined. The
+    // original effectiveStop() asked "is mode == DISABLED?" and stopped only
+    // then, so every undefined value read as drivable and permitted full
+    // throttle. A safety predicate must fail CLOSED. Exhaustive here because
+    // there are only 256 cases and the cost of missing one is a moving rover.
+    for (int m = 0; m <= 255; ++m) {
+        const uint8_t mode = static_cast<uint8_t>(m);
+        const bool known = (m == MODE_DISABLED || m == MODE_MANUAL || m == MODE_AUTONOMOUS);
+        const bool drivable = (m == MODE_MANUAL || m == MODE_AUTONOMOUS);
+        CHECK_EQ(isKnownMode(mode), known);
+        CHECK_EQ(modePermitsMotion(mode), drivable);
+    }
+}
+
+static void disabled_is_known_but_not_drivable() {
+    // The distinction that makes the fix correct: DISABLED is a LEGITIMATE
+    // command (so decode accepts it) that happens to forbid motion. An
+    // undefined value is a PROTOCOL ERROR (so decode rejects it). Conflating
+    // the two is what produced the bug.
+    CHECK(isKnownMode(MODE_DISABLED));
+    CHECK(!modePermitsMotion(MODE_DISABLED));
+}
+
+static void undefined_mode_is_rejected_at_decode() {
+    ControlMsg out;
+    for (int m = 3; m <= 255; ++m) {
+        uint8_t buf[8] = {0};
+        ControlMsg in = {1000, 500, static_cast<uint8_t>(m), 0};
+        uint8_t dlc = encodeControl(in, buf);
+        CHECK(!decodeControl(buf, dlc, out));
+    }
+    // and the three defined modes still decode
+    const uint8_t defined_modes[] = {MODE_DISABLED, MODE_MANUAL, MODE_AUTONOMOUS};
+    for (uint8_t m : defined_modes) {
+        uint8_t buf[8] = {0};
+        ControlMsg in = {100, 0, m, 0};
+        CHECK(decodeControl(buf, encodeControl(in, buf), out));
+        CHECK_EQ(out.mode, m);
+    }
+}
+
+static void protocol_error_has_its_own_fault_bit() {
+    // A rover that halts while telemetry reads "no faults, link healthy" is
+    // its own hazard. The stop must be explainable.
+    const char* names[8];
+    size_t n = faultNames(FAULT_PROTOCOL_ERROR, names, 8);
+    CHECK_EQ(n, static_cast<size_t>(1));
+    CHECK_STREQ(names[0], "PROTOCOL_ERROR");
+    CHECK_EQ(FAULT_PROTOCOL_ERROR, 0x40);        // reserved bit, no DLC change
+}
+
 // --- range handling ---------------------------------------------------------
 
 static void encoder_wrap_avoids_undefined_behaviour() {
@@ -155,6 +209,10 @@ int main() {
     RUN_TEST(wrong_dlc_is_rejected);
     RUN_TEST(every_message_fits_classic_can);
     RUN_TEST(control_outranks_telemetry_on_the_bus);
+    RUN_TEST(mode_predicates_cover_all_256_values);
+    RUN_TEST(disabled_is_known_but_not_drivable);
+    RUN_TEST(undefined_mode_is_rejected_at_decode);
+    RUN_TEST(protocol_error_has_its_own_fault_bit);
     RUN_TEST(encoder_wrap_avoids_undefined_behaviour);
     RUN_TEST(cmd_age_sentinel_is_distinct_from_saturation);
     RUN_TEST(fault_names_reports_combined_faults);

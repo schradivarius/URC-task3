@@ -1,4 +1,4 @@
-# Rover Onboard Computer ↔ Embedded Controller Protocol (v0.3 — CAN)
+# Rover Onboard Computer ↔ Embedded Controller Protocol (v0.3.1 — CAN)
 
 **Scope:** Onboard computer (Jetson Orin Nano, candidate) ↔ embedded controller
 (**Teensy 4.1**, NXP i.MX RT1062, running C++ / Teensyduino), over **CAN**.
@@ -85,6 +85,25 @@ status.
 asserted **and released** without a mode round trip. It takes effect on the
 control cycle it arrives — there is no coast frame.
 
+**`mode` is validated, and an undefined value stops the rover.** The field is a
+uint8, so it carries 256 possible values where three are defined. Two separate
+questions follow, and conflating them was [issue #4](https://github.com/schradivarius/URC-task3/issues/4):
+
+| Question | Answer |
+|---|---|
+| Is this value *defined*? (`isKnownMode`) | `0`, `1`, `2` — **`DISABLED` is valid**, a legitimate command meaning "do not move" |
+| May the rover *move*? (`modePermitsMotion`) | `MANUAL` or `AUTONOMOUS` only — a **whitelist** |
+
+A receiver **rejects** a frame carrying an undefined mode, exactly as it
+rejects a wrong DLC: the sender disagrees with us about the protocol. The
+rejected frame does not refresh the command watchdog, and `PROTOCOL_ERROR` is
+raised so the stop is explainable rather than silent.
+
+This is deliberately **not** forward-compatible the way an unknown CAN id is.
+A newer peer sending a mode this firmware does not implement must stop this
+rover, not be tolerated. If you add a fourth mode, every controller on the bus
+needs the update before a host may send it.
+
 ### 3.2 `TELEM_MOTION` — `0x200`, DLC 8
 
 | Field | Type | Meaning |
@@ -115,6 +134,7 @@ kind of bad telemetry because it looks plausible on a dashboard.
 | `0x08` | `ENCODER_FAULT` | Encoder reading invalid or stalled |
 | `0x10` | `UNDERVOLTAGE` | Supply voltage low (placeholder) |
 | `0x20` | `FIRMWARE_FAULT` | This boot followed a watchdog reset (section 5.2) |
+| `0x40` | `PROTOCOL_ERROR` | The last frame on our id was uninterpretable: wrong DLC, or an undefined `mode`. Self-clears when a valid frame arrives. |
 
 **Command age**, with two distinct reserved values:
 
@@ -138,21 +158,34 @@ Different diagnoses, so they must be different values.
 | Priority | none | non-destructive arbitration |
 | A faulty node | corrupts the link | goes bus-off, isolates itself |
 
-**The one check we still owe.** CAN proves a frame arrived *intact*; it cannot
-prove the sender agrees on what the bytes *mean*. So every decoder validates
-the DLC and rejects a mismatch — the cheap signal that a peer is running a
-different protocol version. Critically, a rejected frame **does not refresh the
-command watchdog**, or a mismatched node could keep the rover alive while
-sending commands it never understood.
+**The checks we still owe.** CAN proves a frame arrived *intact*; it cannot
+prove the sender agrees on what the bytes *mean*, and it cannot catch
+corruption that happens in the software path after the CRC has passed. So
+every decoder validates:
+
+1. **DLC** — a mismatch is the cheap signal that a peer is on a different
+   protocol version.
+2. **`mode`** — an undefined value is the same class of error (section 3.1).
+
+Critically, a rejected frame **does not refresh the command watchdog**, or a
+mismatched node could keep the rover alive while sending commands it never
+understood. `PROTOCOL_ERROR` is raised so the resulting stop is diagnosable.
 
 ## 5. Safety
 
 ### 5.1 The fail-safe rule
 
-Three triggers — **comm timeout**, **explicit `stop`**, and **`DISABLED` mode**
-— all force a stop through a single function,
-`RoverController::effectiveStop()`. There is exactly one place in the codebase
-where "should this rover be moving?" is answered. `commandedOutputs()` then
+Three triggers — **comm timeout**, **explicit `stop`**, and **any mode that
+does not positively permit motion** — all force a stop through a single
+function, `RoverController::effectiveStop()`. There is exactly one place in the
+codebase where "should this rover be moving?" is answered.
+
+That third trigger is a **whitelist**, and that matters. The original version
+asked `mode == MODE_DISABLED` and stopped only then, so every undefined mode
+value read as "not disabled" and permitted full throttle — a safety predicate
+that failed *open*. It now asks `modePermitsMotion()`, so anything the
+firmware does not positively recognise as drivable means stop. Found by
+@k1ngsyph1ll1is in [issue #4](https://github.com/schradivarius/URC-task3/issues/4). `commandedOutputs()` then
 zeroes drive and steer *before* they reach the motor layer, so a future edit to
 `setMotorOutputs()` cannot accidentally act on a stale command.
 

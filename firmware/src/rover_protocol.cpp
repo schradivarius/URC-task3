@@ -55,6 +55,16 @@ inline int32_t getI32(const uint8_t* b) {
 
 }  // namespace
 
+bool isKnownMode(uint8_t mode) {
+    return mode == MODE_DISABLED || mode == MODE_MANUAL || mode == MODE_AUTONOMOUS;
+}
+
+bool modePermitsMotion(uint8_t mode) {
+    // Whitelist. Every value not named here -- including DISABLED and every
+    // undefined value -- means stop. See the note in rover_protocol.h.
+    return mode == MODE_MANUAL || mode == MODE_AUTONOMOUS;
+}
+
 int32_t wrapI32(int64_t value) {
     // Shift into unsigned range, wrap with a modulo that is well defined for
     // negatives, then shift back. Avoids signed overflow entirely, which in
@@ -75,10 +85,12 @@ size_t faultNames(uint8_t bitmask, const char** out, size_t cap) {
     static const uint8_t bits[] = {
         FAULT_COMM_TIMEOUT, FAULT_OVER_CURRENT, FAULT_ESTOP_ACTIVE,
         FAULT_ENCODER_FAULT, FAULT_UNDERVOLTAGE, FAULT_FIRMWARE_FAULT,
+        FAULT_PROTOCOL_ERROR,
     };
     static const char* names[] = {
         "COMM_TIMEOUT", "OVER_CURRENT", "ESTOP_ACTIVE",
         "ENCODER_FAULT", "UNDERVOLTAGE", "FIRMWARE_FAULT",
+        "PROTOCOL_ERROR",
     };
     size_t n = 0;
     for (size_t i = 0; i < sizeof(bits) && n < cap; ++i) {
@@ -99,6 +111,16 @@ uint8_t encodeControl(const ControlMsg& msg, uint8_t* buf) {
 
 bool decodeControl(const uint8_t* buf, uint8_t len, ControlMsg& out) {
     if (len != CONTROL_DLC) return false;
+    // An undefined mode means the sender disagrees with us about the protocol,
+    // exactly like a wrong DLC. Reject the whole frame rather than storing a
+    // value we cannot reason about -- and, because a rejected frame does not
+    // refresh the command watchdog, the rover stops via the existing path and
+    // the operator gets a reported fault instead of a silent halt.
+    //
+    // This is intentionally NOT forward-compatible the way an unknown CAN id
+    // is. A newer peer sending a mode we do not implement must stop this
+    // rover, not be tolerated.
+    if (!isKnownMode(buf[4])) return false;
     out.drive_cmd = getI16(buf + 0);
     out.steer_cmd = getI16(buf + 2);
     out.mode      = buf[4];

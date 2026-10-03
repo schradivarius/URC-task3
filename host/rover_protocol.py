@@ -39,6 +39,7 @@ FAULT_ESTOP_ACTIVE   = 0x04
 FAULT_ENCODER_FAULT  = 0x08
 FAULT_UNDERVOLTAGE   = 0x10
 FAULT_FIRMWARE_FAULT = 0x20
+FAULT_PROTOCOL_ERROR = 0x40
 
 FAULT_NAMES = [
     (FAULT_COMM_TIMEOUT, "COMM_TIMEOUT"),
@@ -47,6 +48,7 @@ FAULT_NAMES = [
     (FAULT_ENCODER_FAULT, "ENCODER_FAULT"),
     (FAULT_UNDERVOLTAGE, "UNDERVOLTAGE"),
     (FAULT_FIRMWARE_FAULT, "FIRMWARE_FAULT"),
+    (FAULT_PROTOCOL_ERROR, "PROTOCOL_ERROR"),
 ]
 
 # --- command age sentinels ---
@@ -74,8 +76,28 @@ INT32_MIN = -(2 ** 31)
 INT32_MAX = 2 ** 31 - 1
 
 
+KNOWN_MODES = (MODE_DISABLED, MODE_MANUAL, MODE_AUTONOMOUS)
+MOTION_MODES = (MODE_MANUAL, MODE_AUTONOMOUS)
+
+
 def fault_names(bitmask):
     return [name for bit, name in FAULT_NAMES if bitmask & bit]
+
+
+def is_known_mode(mode):
+    """Is this a mode value the protocol defines? DISABLED counts: it is a
+    legitimate command that happens to mean "do not move"."""
+    return mode in KNOWN_MODES
+
+
+def mode_permits_motion(mode):
+    """May the rover move in this mode? A WHITELIST, deliberately.
+
+    `mode` is a uint8, so 256 values fit where 3 are defined. Asking only
+    "is it DISABLED?" let every undefined value read as drivable (issue #4).
+    Mirrors modePermitsMotion() in firmware/src/rover_protocol.cpp.
+    """
+    return mode in MOTION_MODES
 
 
 def wrap_i32(value):
@@ -113,6 +135,11 @@ def decode_control(payload):
     if len(payload) != CONTROL_DLC:
         return None
     drive, steer, mode, stop = struct.unpack(CONTROL_FMT, payload)
+    # An undefined mode means the sender disagrees with us about the protocol,
+    # exactly like a wrong DLC. Reject the frame rather than returning a value
+    # the caller cannot reason about. Mirrors decodeControl() in C++.
+    if not is_known_mode(mode):
+        return None
     return {"drive_cmd": drive, "steer_cmd": steer, "mode": mode, "stop": bool(stop)}
 
 

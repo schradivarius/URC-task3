@@ -58,9 +58,14 @@ public:
     // True at boot, before anything has ever arrived.
     bool watchdogTripped() const;
 
-    // THE fail-safe decision. Comm timeout, an explicit stop flag and DISABLED
-    // mode all force a stop through this one function, so there is exactly one
-    // place where "should the rover be moving?" is answered.
+    // THE fail-safe decision. A comm timeout, an explicit stop flag, and any
+    // mode that does not positively permit motion all force a stop through
+    // this one function, so there is exactly one place where "should the rover
+    // be moving?" is answered.
+    //
+    // The mode test is a whitelist (modePermitsMotion), not "== DISABLED".
+    // Asking only about DISABLED let every undefined mode value read as
+    // drivable -- see issue #4 and the note in rover_protocol.h.
     bool effectiveStop() const;
 
     // The drive/steer actually permitted right now: zeroed under stop, so a
@@ -81,6 +86,12 @@ public:
     uint32_t controlFramesAccepted() const { return control_frames_accepted_; }
     uint32_t framesIgnored() const { return frames_ignored_; }
 
+    // True when the most recent frame addressed to CAN_ID_CONTROL could not be
+    // interpreted (wrong DLC, or a mode this firmware does not define). Clears
+    // when a valid frame arrives, so it reports a live condition rather than
+    // latching for the session. Surfaced as FAULT_PROTOCOL_ERROR.
+    bool protocolError() const { return protocol_error_; }
+
 private:
     uint32_t elapsedSinceControl() const;
 
@@ -94,6 +105,7 @@ private:
     uint32_t   next_telemetry_ms_;
     uint32_t   control_frames_accepted_;
     uint32_t   frames_ignored_;
+    bool       protocol_error_;
 };
 
 }  // namespace rover
