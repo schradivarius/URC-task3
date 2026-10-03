@@ -120,6 +120,8 @@ bool decodeControl(const uint8_t* buf, uint8_t len, ControlMsg& out) {
     // This is intentionally NOT forward-compatible the way an unknown CAN id
     // is. A newer peer sending a mode we do not implement must stop this
     // rover, not be tolerated.
+    if (buf[4] != MODE_DISABLED && buf[4] != MODE_MANUAL && buf[4] != MODE_AUTONOMOUS) 
+        return false;
     if (!isKnownMode(buf[4])) return false;
     out.drive_cmd = getI16(buf + 0);
     out.steer_cmd = getI16(buf + 2);
