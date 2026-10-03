@@ -199,6 +199,17 @@ static void fault_names_reports_combined_faults() {
     CHECK_EQ(faultNames(0, names, 8), static_cast<size_t>(0));
 }
 
+static void unknown_mode_forces_stop() {
+    const uint8_t modes[] = {3, 8, 255};
+    for (uint8_t mode : modes) {
+        RoverController ctl = freshController();
+        sendControl(ctl, 1000, 500, mode, 0);
+        CHECK(ctl.effectiveStop());
+        int16_t d, s; ctl.commandedOutputs(d, s);
+        CHECK_EQ(d, 0); CHECK_EQ(s, 0);
+    }
+}
+
 int main() {
     std::printf("test_protocol\n");
     RUN_TEST(control_round_trips);
@@ -216,5 +227,6 @@ int main() {
     RUN_TEST(encoder_wrap_avoids_undefined_behaviour);
     RUN_TEST(cmd_age_sentinel_is_distinct_from_saturation);
     RUN_TEST(fault_names_reports_combined_faults);
+    RUN_TEST(unknown_mode_forces_stop);
     return testing::summary("test_protocol");
 }
