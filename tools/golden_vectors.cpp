@@ -52,6 +52,15 @@ int main() {
         emit("TELEM_MOTION", args, buf, n);
     }
 
+    // Mode predicates for all 256 values, so the Jetson and the Teensy cannot
+    // disagree about which modes permit motion (issue #4). A host that thinks
+    // mode 3 is drivable while the controller stops on it is its own bug.
+    for (int m = 0; m <= 255; ++m) {
+        std::printf("MODE|%d|%d%d\n", m,
+                    isKnownMode((uint8_t)m) ? 1 : 0,
+                    modePermitsMotion((uint8_t)m) ? 1 : 0);
+    }
+
     struct { int16_t fb, ca; uint8_t f; uint16_t age; } statuses[] = {
         {0, 0, 0, 0},
         {-1000, -2500, FAULT_OVER_CURRENT, 42},

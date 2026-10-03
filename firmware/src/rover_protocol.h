@@ -69,6 +69,7 @@ enum : uint8_t {
     FAULT_ENCODER_FAULT  = 0x08,
     FAULT_UNDERVOLTAGE   = 0x10,
     FAULT_FIRMWARE_FAULT = 0x20,  // this boot followed a watchdog reset
+    FAULT_PROTOCOL_ERROR = 0x40,  // a frame on our id could not be interpreted
 };
 
 // Command age. Two distinct reserved values, because "you have never spoken
@@ -97,6 +98,29 @@ static const int32_t INT32_MAX_V = 2147483647;
 // ---------------------------------------------------------------------------
 // Messages
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Mode validation.
+//
+// `mode` is a uint8 on the wire, so it can carry any of 256 values while only
+// three are defined. Two separate questions follow, and conflating them is the
+// bug this pair of functions exists to prevent (issue #4):
+//
+//   isKnownMode()      -- is this a value this protocol version defines?
+//                         DISABLED is KNOWN and VALID; it is a legitimate
+//                         command that happens to mean "do not move".
+//   modePermitsMotion() -- may the rover move in this mode?
+//
+// modePermitsMotion is a WHITELIST, deliberately. The original code asked
+// "is mode == DISABLED?" and stopped only then, so any undefined value --
+// from a protocol mismatch, a faulty sender, or corruption in the software
+// path after CAN's CRC has already passed -- read as "not disabled" and
+// permitted full throttle. A safety predicate must fail CLOSED: anything this
+// firmware does not positively recognise as drivable means stop.
+// ---------------------------------------------------------------------------
+
+bool isKnownMode(uint8_t mode);
+bool modePermitsMotion(uint8_t mode);
 
 struct ControlMsg {
     int16_t drive_cmd;  // -1000..1000, tenths of a percent of full effort

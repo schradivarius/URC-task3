@@ -110,6 +110,69 @@ class TestEndToEnd(RoverFixture):
         self.assertEqual(self.jl.status["current_ca"], 0)
 
 
+class TestUndefinedMode(RoverFixture):
+    """Issue #4, end to end against the real compiled controller.
+
+    `mode` is a uint8 carrying 256 possible values where 3 are defined. Before
+    the fix, any undefined value read as "not DISABLED" and permitted full
+    throttle. These drive the actual firmware logic, not a model of it.
+    """
+
+    def send_raw_mode(self, mode, seconds, drive=1000, steer=500):
+        """Bypass encode_control's own validation to put an arbitrary byte on
+        the bus, the way a mismatched or faulty sender would."""
+        import struct
+        payload = struct.pack("<hhBB", drive, steer, mode, 0)
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            self.link.send(rp.CAN_ID_CONTROL, payload)
+            self.jl.poll()
+            time.sleep(0.02)
+        self.jl.poll()
+
+    def test_undefined_mode_never_moves_the_rover(self):
+        for mode in (3, 42, 255):
+            with self.subTest(mode=mode):
+                self.setUp()                       # fresh controller per mode
+                try:
+                    self.send_raw_mode(mode, 0.6)
+                    self.assertEqual(self.jl.motion["enc_left"], 0,
+                                     "rover moved in undefined mode %d" % mode)
+                    self.assertEqual(self.jl.status["current_ca"], 0)
+                finally:
+                    self.link.close()
+        self.setUp()                               # leave a live fixture for tearDown
+
+    def test_undefined_mode_is_reported_as_a_protocol_error(self):
+        """The stop must be explainable. A rover that halts while telemetry
+        reads "no faults, link healthy" is its own hazard."""
+        self.send_raw_mode(7, 0.5)
+        self.assertIn("PROTOCOL_ERROR", self.faults())
+
+    def test_undefined_mode_does_not_keep_the_watchdog_alive(self):
+        self.drive(0.4)                            # healthy first
+        self.send_raw_mode(7, 0.7)                 # then nothing but bad modes
+        self.assertIn("COMM_TIMEOUT", self.faults(),
+                      "undefined modes refreshed the command watchdog")
+
+    def test_recovery_after_the_sender_is_fixed(self):
+        self.send_raw_mode(7, 0.5)
+        self.assertIn("PROTOCOL_ERROR", self.faults())
+        self.drive(0.5)                            # valid commands resume
+        self.assertEqual(self.faults(), [],
+                         "PROTOCOL_ERROR latched instead of self-clearing")
+        self.assertGreater(self.jl.motion["enc_left"], 0)
+
+    def test_disabled_mode_is_still_accepted_as_a_valid_command(self):
+        """DISABLED is KNOWN and VALID -- a legitimate command meaning "do not
+        move". It must not be rejected as a protocol error; conflating the two
+        is what caused the bug."""
+        self.drive(0.5, drive=1000, mode=rp.MODE_DISABLED)
+        self.assertEqual(self.jl.motion["enc_left"], 0)
+        self.assertNotIn("PROTOCOL_ERROR", self.faults())
+        self.assertNotIn("COMM_TIMEOUT", self.faults())
+
+
 class TestBusHygiene(RoverFixture):
     """A shared CAN bus carries motor-controller and payload traffic too."""
 

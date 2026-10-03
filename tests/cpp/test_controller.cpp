@@ -177,6 +177,79 @@ static void foreign_can_id_does_not_refresh_the_watchdog() {
     CHECK_EQ(ctl.lastControl().drive_cmd, 500);        // not overwritten
 }
 
+// --- undefined mode (issue #4) ----------------------------------------------
+
+static void undefined_mode_does_not_permit_motion() {
+    // REGRESSION, issue #4. Before the fix, mode=255 with stop=0 and a fresh
+    // command permitted drive=1000, steer=500. The rover moved in a mode no
+    // firmware defines.
+    for (int m = 3; m <= 255; m += 29) {       // sample the space; the
+        RoverController ctl = freshController();   // exhaustive check is in
+        ControlMsg msg = {1000, 500, (uint8_t)m, 0};   // test_protocol.cpp
+        uint8_t buf[8] = {0};
+        uint8_t dlc = encodeControl(msg, buf);
+        CHECK(!ctl.ingestFrame(CAN_ID_CONTROL, buf, dlc));   // rejected
+        CHECK(ctl.effectiveStop());
+        int16_t d, s; ctl.commandedOutputs(d, s);
+        CHECK_EQ(d, 0); CHECK_EQ(s, 0);
+    }
+}
+
+static void undefined_mode_does_not_refresh_the_watchdog() {
+    // A peer spamming an undefined mode must not keep the rover alive.
+    RoverController ctl = freshController();
+    sendControl(ctl, 500, 0, MODE_MANUAL, 0);
+    advance(290);
+    for (int i = 0; i < 5; ++i) {
+        ControlMsg msg = {1000, 0, 7, 0};
+        uint8_t buf[8] = {0};
+        ctl.ingestFrame(CAN_ID_CONTROL, buf, encodeControl(msg, buf));
+    }
+    advance(10);
+    CHECK(ctl.watchdogTripped());
+    CHECK(ctl.effectiveStop());
+}
+
+static void undefined_mode_is_reported_not_silent() {
+    RoverController ctl = freshController();
+    ControlMsg msg = {1000, 0, 42, 0};
+    uint8_t buf[8] = {0};
+    ctl.ingestFrame(CAN_ID_CONTROL, buf, encodeControl(msg, buf));
+    CHECK(ctl.protocolError());
+    TelemetryStatus st = ctl.buildStatus(0, 0);
+    CHECK(st.fault_status & FAULT_PROTOCOL_ERROR);
+}
+
+static void a_good_frame_clears_the_protocol_error() {
+    // Self-healing: fix the sender and the fault goes away, rather than
+    // latching and misleading the operator for the rest of the session.
+    RoverController ctl = freshController();
+    ControlMsg bad = {1000, 0, 42, 0};
+    uint8_t buf[8] = {0};
+    ctl.ingestFrame(CAN_ID_CONTROL, buf, encodeControl(bad, buf));
+    CHECK(ctl.protocolError());
+    CHECK(sendControl(ctl, 500, 0, MODE_MANUAL, 0));
+    CHECK(!ctl.protocolError());
+    CHECK(!(ctl.buildStatus(0, 0).fault_status & FAULT_PROTOCOL_ERROR));
+    CHECK(!ctl.effectiveStop());
+}
+
+static void wrong_dlc_also_reports_a_protocol_error() {
+    RoverController ctl = freshController();
+    uint8_t buf[8] = {0};
+    CHECK(!ctl.ingestFrame(CAN_ID_CONTROL, buf, 4));
+    CHECK(ctl.protocolError());
+}
+
+static void a_foreign_id_is_not_a_protocol_error() {
+    // Other traffic on a shared bus is normal, not a fault. Flagging it would
+    // make PROTOCOL_ERROR permanently on and therefore useless.
+    RoverController ctl = freshController();
+    uint8_t buf[8] = {0};
+    ctl.ingestFrame(0x321, buf, 8);
+    CHECK(!ctl.protocolError());
+}
+
 // --- telemetry --------------------------------------------------------------
 
 static void telemetry_reports_comm_timeout_and_age() {
@@ -242,6 +315,12 @@ int main() {
     RUN_TEST(disabled_mode_forces_stop_at_full_throttle);
     RUN_TEST(wrong_dlc_does_not_refresh_the_watchdog);
     RUN_TEST(foreign_can_id_does_not_refresh_the_watchdog);
+    RUN_TEST(undefined_mode_does_not_permit_motion);
+    RUN_TEST(undefined_mode_does_not_refresh_the_watchdog);
+    RUN_TEST(undefined_mode_is_reported_not_silent);
+    RUN_TEST(a_good_frame_clears_the_protocol_error);
+    RUN_TEST(wrong_dlc_also_reports_a_protocol_error);
+    RUN_TEST(a_foreign_id_is_not_a_protocol_error);
     RUN_TEST(telemetry_reports_comm_timeout_and_age);
     RUN_TEST(age_is_unknown_before_the_first_command);
     RUN_TEST(sensor_faults_survive_alongside_comm_timeout);

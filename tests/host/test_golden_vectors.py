@@ -43,6 +43,9 @@ class TestGoldenVectors(unittest.TestCase):
         except (subprocess.CalledProcessError, FileNotFoundError) as exc:
             raise unittest.SkipTest("C++ toolchain unavailable: %s" % exc)
 
+    def vectors(self, kind):
+        return [ln.split("|") for ln in self.lines if ln.split("|")[0] == kind]
+
     def python_encode(self, name, args):
         n = [int(a) for a in args.split(",")]
         if name == "CONTROL":
@@ -56,9 +59,39 @@ class TestGoldenVectors(unittest.TestCase):
     def test_cpp_emitted_vectors(self):
         self.assertGreater(len(self.lines), 10, "C++ emitted almost nothing")
 
+    def test_mode_predicates_agree_across_languages(self):
+        """Issue #4. Both sides must agree, for all 256 values, on which modes
+        are defined and which permit motion. A host that thinks mode 3 is
+        drivable while the controller stops on it is its own bug."""
+        rows = self.vectors("MODE")
+        self.assertEqual(len(rows), 256, "C++ did not emit all 256 mode cases")
+        for _, mode_s, flags in rows:
+            mode = int(mode_s)
+            cpp_known, cpp_motion = flags[0] == "1", flags[1] == "1"
+            self.assertEqual(p.is_known_mode(mode), cpp_known,
+                             "is_known_mode disagrees for mode=%d" % mode)
+            self.assertEqual(p.mode_permits_motion(mode), cpp_motion,
+                             "mode_permits_motion disagrees for mode=%d" % mode)
+        # and the property that actually matters, stated directly
+        for mode in range(256):
+            if mode not in (p.MODE_MANUAL, p.MODE_AUTONOMOUS):
+                self.assertFalse(p.mode_permits_motion(mode),
+                                 "mode=%d permits motion but should not" % mode)
+
+    def test_undefined_mode_is_rejected_by_the_python_decoder(self):
+        for mode in (3, 4, 42, 128, 255):
+            payload = p.encode_control(1000, 500, mode, False)
+            self.assertIsNone(p.decode_control(payload),
+                              "Python accepted undefined mode=%d" % mode)
+        for mode in (p.MODE_DISABLED, p.MODE_MANUAL, p.MODE_AUTONOMOUS):
+            payload = p.encode_control(100, 0, mode, False)
+            self.assertIsNotNone(p.decode_control(payload))
+
     def test_python_encoder_matches_cpp_byte_for_byte(self):
         for line in self.lines:
             name, args, expected_hex = line.split("|")
+            if name == "MODE":
+                continue        # not an encoded frame
             actual = self.python_encode(name, args).hex()
             self.assertEqual(
                 actual, expected_hex,
@@ -75,12 +108,16 @@ class TestGoldenVectors(unittest.TestCase):
         }
         for line in self.lines:
             name, args, expected_hex = line.split("|")
+            if name == "MODE":
+                continue
             decoded = decoders[name](bytes.fromhex(expected_hex))
             self.assertIsNotNone(decoded, "Python rejected a valid C++ frame: %s" % line)
 
     def test_dlcs_agree_across_languages(self):
         for line in self.lines:
             name, _, hex_bytes = line.split("|")
+            if name == "MODE":
+                continue
             expected = {"CONTROL": p.CONTROL_DLC,
                         "TELEM_MOTION": p.TELEM_MOTION_DLC,
                         "TELEM_STATUS": p.TELEM_STATUS_DLC}[name]
@@ -88,7 +125,9 @@ class TestGoldenVectors(unittest.TestCase):
 
     def test_every_frame_fits_classic_can(self):
         for line in self.lines:
-            _, _, hex_bytes = line.split("|")
+            name, _, hex_bytes = line.split("|")
+            if name == "MODE":
+                continue
             self.assertLessEqual(len(hex_bytes) // 2, 8,
                                  "frame exceeds Classic CAN's 8-byte limit")
 

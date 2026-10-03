@@ -12,7 +12,8 @@ RoverController::RoverController(MillisFn now_ms,
       last_control_ms_(0),
       next_telemetry_ms_(now_ms ? now_ms() : 0),
       control_frames_accepted_(0),
-      frames_ignored_(0) {
+      frames_ignored_(0),
+      protocol_error_(false) {
     // Boot state is the safest available: stopped, disabled, and with no
     // command ever received -- so cmdAgeMs() reads CMD_AGE_UNKNOWN, the
     // watchdog is tripped from the very first cycle, and the rover cannot
@@ -28,13 +29,17 @@ bool RoverController::ingestFrame(uint32_t can_id, const uint8_t* buf, uint8_t l
 
     ControlMsg msg;
     if (!decodeControl(buf, len, msg)) {
-        // Right id, wrong DLC: a peer on a different protocol version. It must
-        // NOT refresh the watchdog, or a mismatched node could keep the rover
-        // alive while it acts on commands it never actually understood.
+        // Right id, but the frame is uninterpretable -- a wrong DLC, or a mode
+        // this firmware does not define. Either way the peer disagrees with us
+        // about the protocol. It must NOT refresh the watchdog, or a
+        // mismatched node could keep the rover alive while it acts on commands
+        // it never actually understood.
         frames_ignored_++;
+        protocol_error_ = true;
         return false;
     }
 
+    protocol_error_  = false;        // a good frame clears the condition
     last_control_    = msg;
     have_control_    = true;
     last_control_ms_ = now_ms_();
@@ -61,7 +66,7 @@ bool RoverController::watchdogTripped() const {
 bool RoverController::effectiveStop() const {
     return watchdogTripped()
         || last_control_.stop != 0
-        || last_control_.mode == MODE_DISABLED;
+        || !modePermitsMotion(last_control_.mode);
 }
 
 void RoverController::commandedOutputs(int16_t& drive, int16_t& steer) const {
@@ -94,6 +99,9 @@ TelemetryStatus RoverController::buildStatus(int16_t steer_fb, int16_t current_c
     st.current_ca   = current_ca;
     st.fault_status = static_cast<uint8_t>(sensor_faults | extra_faults);
     if (watchdogTripped()) st.fault_status |= FAULT_COMM_TIMEOUT;
+    // Without this the rover would halt on a bad mode while telemetry read
+    // "no faults, link healthy" -- a silent stop is its own hazard.
+    if (protocol_error_)   st.fault_status |= FAULT_PROTOCOL_ERROR;
     st.cmd_age_ms   = cmdAgeMs();
     return st;
 }
