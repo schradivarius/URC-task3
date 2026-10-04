@@ -60,6 +60,14 @@ enum : uint8_t {
     MODE_AUTONOMOUS = 2,
 };
 
+// Indicator Values (ControlMsg: LED indicator)          
+enum : uint8_t {
+    INDICATOR_OFF   = 0, // mode disabled or watchdog tripped
+    INDICATOR_BLUE = 1, // mode_manual lights blue LED
+    INDICATOR_RED = 2, // mode_autonomous lights red LED
+    INDICATOR_GREEN_FLASH = 3 // target reached by autonomous mode
+};              
+
 // Fault bitmask (TelemetryStatus::fault_status). Powers of two so faults
 // combine: COMM_TIMEOUT | OVER_CURRENT == 0x03 and both survive.
 enum : uint8_t {
@@ -87,9 +95,9 @@ enum : uint16_t {
 // locked the rover into FD-capable transceivers on every node, including the
 // motor controllers, many of which are Classic-only.
 enum : uint8_t {
-    CONTROL_DLC      = 6,
+    CONTROL_DLC      = 7,
     TELEM_MOTION_DLC = 8,
-    TELEM_STATUS_DLC = 7,
+    TELEM_STATUS_DLC = 8,
 };
 
 static const int32_t INT32_MIN_V = -2147483647 - 1;
@@ -120,6 +128,7 @@ static const int32_t INT32_MAX_V = 2147483647;
 // ---------------------------------------------------------------------------
 
 bool isKnownMode(uint8_t mode);
+bool isKnownIndicator(uint8_t indicator_request);
 bool modePermitsMotion(uint8_t mode);
 
 struct ControlMsg {
@@ -127,6 +136,7 @@ struct ControlMsg {
     int16_t steer_cmd;  // -1000..1000, tenths of a percent of full range
     uint8_t mode;       // MODE_*
     uint8_t stop;       // 1 forces an immediate stop regardless of mode
+    uint8_t indicator_request; // INDICATOR_* 
 };
 
 // Telemetry is split across two frames so each fits Classic CAN's 8 bytes.
@@ -142,6 +152,7 @@ struct TelemetryStatus {
     int16_t  current_ca;   // SIGNED centiamps (1 cA = 10 mA), +/-327.67 A
     uint8_t  fault_status; // FAULT_* bitmask
     uint16_t cmd_age_ms;   // ms since the last valid CONTROL frame
+    uint8_t indicator_state;
 };
 
 // ---------------------------------------------------------------------------
