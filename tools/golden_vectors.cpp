@@ -34,7 +34,7 @@ int main() {
         {-21846, 170, MODE_MANUAL, 0},     // 0xAAAA: the old UART false-sync case
     };
     for (auto& c : controls) {
-        ControlMsg m = {c.d, c.s, c.m, c.st, INDICATOR_OFF};
+        ControlMsg m = {c.d, c.s, c.m, c.st};
         uint8_t n = encodeControl(m, buf);
         std::snprintf(args, sizeof(args), "%d,%d,%u,%u", c.d, c.s, c.m, c.st);
         emit("CONTROL", args, buf, n);
@@ -68,7 +68,7 @@ int main() {
         {-1, -10000, 0xFF, CMD_AGE_UNKNOWN},
     };
     for (auto& s : statuses) {
-        TelemetryStatus m = {s.fb, s.ca, s.f, s.age, INDICATOR_OFF};
+        TelemetryStatus m = {s.fb, s.ca, s.f, s.age};
         uint8_t n = encodeTelemetryStatus(m, buf);
         std::snprintf(args, sizeof(args), "%d,%d,%u,%u", s.fb, s.ca, s.f, s.age);
         emit("TELEM_STATUS", args, buf, n);

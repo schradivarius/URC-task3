@@ -69,15 +69,6 @@ bool RoverController::effectiveStop() const {
         || !modePermitsMotion(last_control_.mode);
 }
 
-uint8_t RoverController::indicatorState() const {
-    if (watchdogTripped()) return INDICATOR_OFF;
-    if ( last_control_.mode == MODE_DISABLED )   return INDICATOR_OFF;
-    if ( last_control_.mode == MODE_MANUAL)     return INDICATOR_BLUE;
-    // only AUTONOMOUS can reach here: your mode work guarantees no other value exists
-    if ( last_control_.indicator_request == INDICATOR_GREEN_FLASH ) return INDICATOR_GREEN_FLASH;
-    return INDICATOR_RED;
-}
-
 void RoverController::commandedOutputs(int16_t& drive, int16_t& steer) const {
     if (effectiveStop()) { drive = 0; steer = 0; return; }
     drive = last_control_.drive_cmd;
@@ -112,7 +103,6 @@ TelemetryStatus RoverController::buildStatus(int16_t steer_fb, int16_t current_c
     // "no faults, link healthy" -- a silent stop is its own hazard.
     if (protocol_error_)   st.fault_status |= FAULT_PROTOCOL_ERROR;
     st.cmd_age_ms   = cmdAgeMs();
-    st.indicator_state = indicatorState();
     return st;
 }
 

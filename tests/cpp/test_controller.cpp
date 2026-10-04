@@ -22,8 +22,8 @@ static RoverController freshController(uint32_t start_ms = 0) {
 }
 
 static bool sendControl(RoverController& ctl, int16_t drive, int16_t steer,
-                        uint8_t mode, uint8_t stop, uint8_t indicator_request = INDICATOR_OFF) {
-    ControlMsg m = {drive, steer, mode, stop, indicator_request};
+                        uint8_t mode, uint8_t stop) {
+    ControlMsg m = {drive, steer, mode, stop};
     uint8_t buf[8] = {0};
     uint8_t dlc = encodeControl(m, buf);
     return ctl.ingestFrame(CAN_ID_CONTROL, buf, dlc);
@@ -170,7 +170,7 @@ static void foreign_can_id_does_not_refresh_the_watchdog() {
     sendControl(ctl, 500, 0, MODE_MANUAL, 0);
     advance(290);
     uint8_t buf[8] = {0};
-    encodeControl({999, 0, MODE_MANUAL, 0, INDICATOR_OFF}, buf);
+    encodeControl({999, 0, MODE_MANUAL, 0}, buf);
     CHECK(!ctl.ingestFrame(0x321, buf, CONTROL_DLC));  // someone else's frame
     advance(10);
     CHECK(ctl.watchdogTripped());
@@ -185,7 +185,7 @@ static void undefined_mode_does_not_permit_motion() {
     // firmware defines.
     for (int m = 3; m <= 255; m += 29) {       // sample the space; the
         RoverController ctl = freshController();   // exhaustive check is in
-        ControlMsg msg = {1000, 500, (uint8_t)m, 0, INDICATOR_OFF};   // test_protocol.cpp
+        ControlMsg msg = {1000, 500, (uint8_t)m, 0};   // test_protocol.cpp
         uint8_t buf[8] = {0};
         uint8_t dlc = encodeControl(msg, buf);
         CHECK(!ctl.ingestFrame(CAN_ID_CONTROL, buf, dlc));   // rejected
@@ -201,7 +201,7 @@ static void undefined_mode_does_not_refresh_the_watchdog() {
     sendControl(ctl, 500, 0, MODE_MANUAL, 0);
     advance(290);
     for (int i = 0; i < 5; ++i) {
-        ControlMsg msg = {1000, 0, 7, 0, INDICATOR_OFF};
+        ControlMsg msg = {1000, 0, 7, 0};
         uint8_t buf[8] = {0};
         ctl.ingestFrame(CAN_ID_CONTROL, buf, encodeControl(msg, buf));
     }
@@ -212,7 +212,7 @@ static void undefined_mode_does_not_refresh_the_watchdog() {
 
 static void undefined_mode_is_reported_not_silent() {
     RoverController ctl = freshController();
-    ControlMsg msg = {1000, 0, 42, 0, INDICATOR_OFF};
+    ControlMsg msg = {1000, 0, 42, 0};
     uint8_t buf[8] = {0};
     ctl.ingestFrame(CAN_ID_CONTROL, buf, encodeControl(msg, buf));
     CHECK(ctl.protocolError());
@@ -224,7 +224,7 @@ static void a_good_frame_clears_the_protocol_error() {
     // Self-healing: fix the sender and the fault goes away, rather than
     // latching and misleading the operator for the rest of the session.
     RoverController ctl = freshController();
-    ControlMsg bad = {1000, 0, 42, 0, INDICATOR_OFF};
+    ControlMsg bad = {1000, 0, 42, 0};
     uint8_t buf[8] = {0};
     ctl.ingestFrame(CAN_ID_CONTROL, buf, encodeControl(bad, buf));
     CHECK(ctl.protocolError());
@@ -302,54 +302,6 @@ static void telemetry_does_not_burst_after_a_stall() {
     CHECK(!ctl.telemetryDue());        // exactly one, not a hundred
 }
 
-static void autonomous_mode_shows_red() {
-    RoverController ctl = freshController();
-    sendControl(ctl, 500, 0, MODE_AUTONOMOUS, 0, INDICATOR_RED);
-    CHECK_EQ(ctl.indicatorState(), INDICATOR_RED);
-}
-
-static void autonomous_mode_shows_green_flash() {
-    RoverController ctl = freshController();
-    sendControl(ctl, 500, 0, MODE_AUTONOMOUS, 0, INDICATOR_GREEN_FLASH);
-    CHECK_EQ(ctl.indicatorState(), INDICATOR_GREEN_FLASH);
-}
-
-static void watchdog_trip_turns_indicator_off() {
-    RoverController ctl = freshController();
-    sendControl(ctl, 500, 0, MODE_AUTONOMOUS, 0, INDICATOR_RED);
-    CHECK_EQ(ctl.indicatorState(), INDICATOR_RED);
-    advance(300);
-    CHECK_EQ(ctl.indicatorState(), INDICATOR_OFF);
-}
-
-static void manual_mode_always_shows_blue() {
-    const uint8_t requests[] = {INDICATOR_BLUE, INDICATOR_RED, INDICATOR_GREEN_FLASH};
-    for (uint8_t request : requests) {
-        RoverController ctl = freshController();
-        sendControl(ctl, 500, 0, MODE_MANUAL, 0, request);
-        CHECK_EQ(ctl.indicatorState(), INDICATOR_BLUE);
-    }
-}
-
-static void disabled_mode_shows_off() {
-    RoverController ctl = freshController();
-    sendControl(ctl, 500, 0, MODE_DISABLED, 0, INDICATOR_BLUE);
-    CHECK_EQ(ctl.indicatorState(), INDICATOR_OFF);
-}
-
-static void paused_autonomy_stays_red() {
-    RoverController ctl = freshController();
-    sendControl(ctl, 500, 0, MODE_AUTONOMOUS, 1, INDICATOR_RED);
-    CHECK_EQ(ctl.indicatorState(), INDICATOR_RED);
-}
-
-static void telemetry_reports_indicator_state(){
-    RoverController ctl = freshController();
-    sendControl(ctl, 500, 0, MODE_AUTONOMOUS, 0, INDICATOR_GREEN_FLASH);
-    TelemetryStatus st = ctl.buildStatus(0,0);
-    CHECK_EQ(st.indicator_state, INDICATOR_GREEN_FLASH);
-}
-
 int main() {
     std::printf("test_controller\n");
     RUN_TEST(boots_stopped_and_disabled);
@@ -369,13 +321,6 @@ int main() {
     RUN_TEST(a_good_frame_clears_the_protocol_error);
     RUN_TEST(wrong_dlc_also_reports_a_protocol_error);
     RUN_TEST(a_foreign_id_is_not_a_protocol_error);
-    RUN_TEST(autonomous_mode_shows_red);
-    RUN_TEST(autonomous_mode_shows_green_flash);
-    RUN_TEST(watchdog_trip_turns_indicator_off);
-    RUN_TEST(manual_mode_always_shows_blue);
-    RUN_TEST(disabled_mode_shows_off);
-    RUN_TEST(paused_autonomy_stays_red);
-    RUN_TEST(telemetry_reports_indicator_state);
     RUN_TEST(telemetry_reports_comm_timeout_and_age);
     RUN_TEST(age_is_unknown_before_the_first_command);
     RUN_TEST(sensor_faults_survive_alongside_comm_timeout);

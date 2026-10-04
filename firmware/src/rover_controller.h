@@ -68,8 +68,6 @@ public:
     // drivable -- see issue #4 and the note in rover_protocol.h.
     bool effectiveStop() const;
 
-    uint8_t indicatorState() const;
-
     // The drive/steer actually permitted right now: zeroed under stop, so a
     // caller cannot accidentally act on a stale command.
     void commandedOutputs(int16_t& drive, int16_t& steer) const;
