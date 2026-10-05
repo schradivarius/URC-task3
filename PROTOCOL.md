@@ -105,6 +105,15 @@ A newer peer sending a mode this firmware does not implement must stop this
 rover, not be tolerated. If you add a fourth mode, every controller on the bus
 needs the update before a host may send it.
 
+**`drive_cmd` and `steer_cmd` are range-checked the same way.** Both are int16,
+so they can carry -32768..32767 while only `CMD_MIN`..`CMD_MAX` (-1000..1000,
+i.e. ±100.0%) means anything. A value outside that range is a sender that
+disagrees with us about the scale or the layout, so the frame is **rejected,
+not clamped** (`isValidCommand()`): clamping would quietly turn a misunderstood
+command into full throttle. As with an undefined mode, the rejected frame does
+not refresh the watchdog and `PROTOCOL_ERROR` is raised. Full scale (±1000)
+itself is valid.
+
 ### 3.2 `TELEM_MOTION` — `0x200`, DLC 8
 
 | Field | Type | Meaning |
@@ -136,7 +145,7 @@ kind of bad telemetry because it looks plausible on a dashboard.
 | `0x08` | `ENCODER_FAULT` | Encoder reading invalid or stalled |
 | `0x10` | `UNDERVOLTAGE` | Supply voltage low (placeholder) |
 | `0x20` | `FIRMWARE_FAULT` | This boot followed a watchdog reset (section 5.2) |
-| `0x40` | `PROTOCOL_ERROR` | The last frame on our id was uninterpretable: wrong DLC, an undefined `mode`, or an undefined `indicator_request`. Self-clears when a valid frame arrives. |
+| `0x40` | `PROTOCOL_ERROR` | The last frame on our id was uninterpretable: wrong DLC, an undefined `mode`, an undefined `indicator_request`, or `drive_cmd`/`steer_cmd` outside ±1000. Self-clears when a valid frame arrives. |
 
 **Command age**, with two distinct reserved values:
 
@@ -215,6 +224,8 @@ every decoder validates:
 1. **DLC** — a mismatch is the cheap signal that a peer is on a different
    protocol version.
 2. **`mode`** — an undefined value is the same class of error (section 3.1).
+3. **`drive_cmd` / `steer_cmd`** — outside ±1000 is the same class of error
+   again (section 3.1).
 
 Critically, a rejected frame **does not refresh the command watchdog**, or a
 mismatched node could keep the rover alive while sending commands it never
@@ -282,22 +293,38 @@ moment the counter wraps past the deadline. **Every time comparison in
 verified to *fail* against a naive timestamp-comparison implementation — it is
 a real regression test, not decoration.
 
-## 6. Timing constants
+## 6. Configuration constants
+
+Every protocol and timing constant lives in **one file per language**:
+`firmware/src/rover_config.h` (Teensy) and `host/rover_config.py` (Jetson).
+Change both together — `tests/host/test_config_sync.py` fails if they
+disagree, so a timeout or id changed on one side only is caught in CI rather
+than on the rover.
 
 | Constant | Value | Notes |
 |---|---|---|
-| `WATCHDOG_TIMEOUT_MS` | 300 | 6× the control period, placeholder |
-| `TELEMETRY_PERIOD_MS` | 50 | 20 Hz |
-| `HW_WATCHDOG_MS` | 1000 | Teensy reset if the loop stalls |
-| `LINK_TIMEOUT_S` (Jetson) | 0.5 | Informational only |
+| `PROTOCOL_VERSION` | 1 | Bump when a message's layout or meaning changes. Not sent on the wire yet |
+| `CAN_BITRATE_HZ` | 500000 | Every node on the bus must match |
+| `WATCHDOG_TIMEOUT_MS` | 300 | 6× the control period, placeholder (`DEFAULT_WATCHDOG_TIMEOUT_MS` in C++) |
+| `TELEMETRY_PERIOD_MS` | 50 | 20 Hz (`DEFAULT_TELEMETRY_PERIOD_MS` in C++) |
+| `HW_WATCHDOG_MS` | 1000 | Teensy reset if the loop stalls (C++ only) |
+| `CONTROL_RATE_HZ` | 20 | Jetson send rate (Python only) |
+| `LINK_TIMEOUT_S` | 0.5 | Jetson-side, informational only (Python only) |
+| `CAN_ID_*` | `0x100`, `0x200`, `0x201` | Section 2.1 |
+| `*_DLC` | 7, 8, 8 | C++ states them; Python derives them from its struct formats |
+| `MODE_*`, `MODE_MAX` | 0, 1, 2 | Section 3.1 |
+| `CMD_MIN`, `CMD_MAX` | -1000, 1000 | Valid `drive_cmd`/`steer_cmd` range |
 
-All placeholders, chosen to sit comfortably above one period plus margin. None
-are derived from measured actuator response yet.
+Values that describe a message's *contents* — fault bits, indicator codes,
+`CMD_AGE_*` — stay in `rover_protocol.*`, since they are not settings.
+
+The timing values are all placeholders, chosen to sit comfortably above one
+period plus margin. None are derived from measured actuator response yet.
 
 ## 7. Demonstration and tests — no hardware required
 
 ```
-make test     # 28 C++ tests + 11 host tests
+make test     # 50 C++ tests + 30 host tests
 make demo     # the message-exchange demonstration
 ```
 
@@ -358,15 +385,17 @@ This was verified to fail on an injected endianness change.
 | Path | Runs on | Purpose |
 |---|---|---|
 | `firmware/rover_firmware.ino` | Teensy 4.1 | Hardware wiring only |
+| `firmware/src/rover_config.h` | **Both** | Protocol and timing constants (section 6) |
 | `firmware/src/rover_protocol.*` | **Both** | Message definitions and codec |
 | `firmware/src/rover_controller.*` | **Both** | Command/safety state machine |
+| `host/rover_config.py` | Jetson | Python constants (pinned to `rover_config.h`) |
 | `host/rover_protocol.py` | Jetson | Python codec (pinned to the C++ one) |
 | `host/can_link.py` | Jetson | Sim and python-can backends |
 | `host/jetson_test.py` | Jetson | Live host harness |
 | `host/demo.py` | Jetson | The demonstration in section 7 |
 | `tools/rover_sim.cpp` | dev machine | Simulator: real controller, fake plant |
 | `tools/golden_vectors.cpp` | dev machine | Emits vectors for cross-language pinning |
-| `tests/cpp/`, `tests/host/` | dev machine | 39 tests total |
+| `tests/cpp/`, `tests/host/` | dev machine | 80 tests total |
 
 ### 10.1 Flashing the Teensy 4.1
 
