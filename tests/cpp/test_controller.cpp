@@ -250,6 +250,44 @@ static void a_foreign_id_is_not_a_protocol_error() {
     CHECK(!ctl.protocolError());
 }
 
+// --- out-of-range drive / steer ---------------------------------------------
+
+static void out_of_range_command_never_moves_the_rover() {
+    // drive=1001 is not "a bit more than full throttle"; it is a sender that
+    // disagrees about the scale. It must not be clamped to 1000 and obeyed.
+    const int16_t bad[] = {CMD_MAX + 1, CMD_MIN - 1, 32767, -32768};
+    for (int16_t v : bad) {
+        RoverController ctl = freshController();
+        CHECK(!sendControl(ctl, v, 0, MODE_MANUAL, 0));
+        CHECK(!sendControl(ctl, 0, v, MODE_MANUAL, 0));
+        CHECK(ctl.effectiveStop());
+        int16_t d, s; ctl.commandedOutputs(d, s);
+        CHECK_EQ(d, 0); CHECK_EQ(s, 0);
+    }
+}
+
+static void out_of_range_command_does_not_refresh_the_watchdog() {
+    // A sender stuck emitting out-of-range values must not keep the rover
+    // alive on its last good command.
+    RoverController ctl = freshController();
+    CHECK(sendControl(ctl, 500, 0, MODE_MANUAL, 0));
+    advance(290);
+    for (int i = 0; i < 5; ++i) sendControl(ctl, 2000, 0, MODE_MANUAL, 0);
+    advance(10);
+    CHECK(ctl.watchdogTripped());
+    CHECK(ctl.effectiveStop());
+    CHECK_EQ(ctl.lastControl().drive_cmd, 500);   // never stored
+}
+
+static void out_of_range_command_is_reported_as_a_protocol_error() {
+    RoverController ctl = freshController();
+    sendControl(ctl, 0, -5000, MODE_MANUAL, 0);
+    CHECK(ctl.protocolError());
+    CHECK(ctl.buildStatus(0, 0).fault_status & FAULT_PROTOCOL_ERROR);
+    CHECK(sendControl(ctl, 0, -1000, MODE_MANUAL, 0));   // full scale is fine
+    CHECK(!ctl.protocolError());
+}
+
 // --- telemetry --------------------------------------------------------------
 
 static void telemetry_reports_comm_timeout_and_age() {
@@ -369,6 +407,9 @@ int main() {
     RUN_TEST(a_good_frame_clears_the_protocol_error);
     RUN_TEST(wrong_dlc_also_reports_a_protocol_error);
     RUN_TEST(a_foreign_id_is_not_a_protocol_error);
+    RUN_TEST(out_of_range_command_never_moves_the_rover);
+    RUN_TEST(out_of_range_command_does_not_refresh_the_watchdog);
+    RUN_TEST(out_of_range_command_is_reported_as_a_protocol_error);
     RUN_TEST(autonomous_mode_shows_red);
     RUN_TEST(autonomous_mode_shows_green_flash);
     RUN_TEST(watchdog_trip_turns_indicator_off);

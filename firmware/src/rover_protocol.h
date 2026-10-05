@@ -98,6 +98,22 @@ bool isKnownMode(uint8_t mode);
 bool isKnownIndicator(uint8_t indicator_request);
 bool modePermitsMotion(uint8_t mode);
 
+// ---------------------------------------------------------------------------
+// Command range validation.
+//
+// drive_cmd and steer_cmd are int16 on the wire, so they can carry
+// -32768..32767 while only CMD_MIN..CMD_MAX (+/-1000, i.e. +/-100.0%) means
+// anything. A value outside that range is not "more than full throttle" --
+// it is a sender that disagrees with us about the scale or the layout, the
+// same class of fault as an undefined mode. So decodeControl() rejects the
+// whole frame rather than clamping it: clamping would quietly turn a
+// misunderstood command into full throttle, and a rejected frame does not
+// refresh the command watchdog, so the rover stops and the controller
+// reports FAULT_PROTOCOL_ERROR.
+// ---------------------------------------------------------------------------
+
+bool isValidCommand(int16_t value);
+
 struct ControlMsg {
     int16_t drive_cmd;  // -1000..1000, tenths of a percent of full effort
     int16_t steer_cmd;  // -1000..1000, tenths of a percent of full range

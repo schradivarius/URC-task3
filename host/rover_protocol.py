@@ -109,6 +109,16 @@ def mode_permits_motion(mode):
     return mode in MOTION_MODES
 
 
+def is_valid_command(value):
+    """Is this drive/steer value inside CMD_MIN..CMD_MAX (+/-100.0%)?
+
+    Out-of-range values are rejected at decode, never clamped: clamping would
+    quietly turn a misunderstood command into full throttle. Mirrors
+    isValidCommand() in firmware/src/rover_protocol.cpp.
+    """
+    return CMD_MIN <= value <= CMD_MAX
+
+
 def wrap_i32(value):
     """Wrap an unbounded accumulator into int32 range, matching wrapI32()."""
     return ((value - INT32_MIN) % (2 ** 32)) + INT32_MIN
@@ -150,7 +160,10 @@ def decode_control(payload):
     if not is_known_mode(mode):
         return None
     if indicator_request not in KNOWN_INDICATORS:
-        return None 
+        return None
+    # Same for an out-of-range drive or steer: reject, never clamp.
+    if not (is_valid_command(drive) and is_valid_command(steer)):
+        return None
     return {"drive_cmd": drive, "steer_cmd": steer, "mode": mode, "stop": bool(stop), "indicator_request": indicator_request}
 
 

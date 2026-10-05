@@ -43,8 +43,18 @@ class TestGoldenVectors(unittest.TestCase):
         except (subprocess.CalledProcessError, FileNotFoundError) as exc:
             raise unittest.SkipTest("C++ toolchain unavailable: %s" % exc)
 
+    # Lines that report a predicate rather than an encoded frame.
+    PREDICATE_KINDS = ("MODE", "RANGE")
+
     def vectors(self, kind):
         return [ln.split("|") for ln in self.lines if ln.split("|")[0] == kind]
+
+    def frames(self):
+        """(name, args, hex) for every encoded-frame line."""
+        for line in self.lines:
+            name, args, hex_bytes = line.split("|")
+            if name not in self.PREDICATE_KINDS:
+                yield name, args, hex_bytes
 
     def python_encode(self, name, args):
         n = [int(a) for a in args.split(",")]
@@ -87,11 +97,31 @@ class TestGoldenVectors(unittest.TestCase):
             payload = p.encode_control(100, 0, mode, False)
             self.assertIsNotNone(p.decode_control(payload))
 
+    def test_command_range_agrees_across_languages(self):
+        """Both sides must agree on exactly where the valid drive/steer range
+        ends. A host that sends 1001 thinking it is legal would stop the rover
+        with a PROTOCOL_ERROR it cannot explain."""
+        rows = self.vectors("RANGE")
+        self.assertGreater(len(rows), 0, "C++ emitted no RANGE cases")
+        for _, value_s, flag in rows:
+            value = int(value_s)
+            self.assertEqual(p.is_valid_command(value), flag == "1",
+                             "is_valid_command disagrees for %d" % value)
+
+    def test_out_of_range_command_is_rejected_by_the_python_decoder(self):
+        for v in (p.CMD_MIN - 1, p.CMD_MAX + 1, -32768, 32767):
+            self.assertIsNone(p.decode_control(
+                p.encode_control(v, 0, p.MODE_MANUAL, False)),
+                "Python accepted drive=%d" % v)
+            self.assertIsNone(p.decode_control(
+                p.encode_control(0, v, p.MODE_MANUAL, False)),
+                "Python accepted steer=%d" % v)
+        for v in (p.CMD_MIN, 0, p.CMD_MAX):
+            self.assertIsNotNone(p.decode_control(
+                p.encode_control(v, v, p.MODE_MANUAL, False)))
+
     def test_python_encoder_matches_cpp_byte_for_byte(self):
-        for line in self.lines:
-            name, args, expected_hex = line.split("|")
-            if name == "MODE":
-                continue        # not an encoded frame
+        for name, args, expected_hex in self.frames():
             actual = self.python_encode(name, args).hex()
             self.assertEqual(
                 actual, expected_hex,
@@ -106,28 +136,27 @@ class TestGoldenVectors(unittest.TestCase):
             "TELEM_MOTION": p.decode_telemetry_motion,
             "TELEM_STATUS": p.decode_telemetry_status,
         }
-        for line in self.lines:
-            name, args, expected_hex = line.split("|")
-            if name == "MODE":
-                continue
+        for name, args, expected_hex in self.frames():
             decoded = decoders[name](bytes.fromhex(expected_hex))
-            self.assertIsNotNone(decoded, "Python rejected a valid C++ frame: %s" % line)
+            if name == "CONTROL":
+                drive, steer = (int(a) for a in args.split(",")[:2])
+                if not (p.is_valid_command(drive) and p.is_valid_command(steer)):
+                    # Some vectors pin the byte layout of int16 extremes;
+                    # those must encode identically but are not valid commands.
+                    self.assertIsNone(decoded, "Python accepted out-of-range %s" % args)
+                    continue
+            self.assertIsNotNone(decoded, "Python rejected a valid C++ frame: %s|%s"
+                                 % (name, args))
 
     def test_dlcs_agree_across_languages(self):
-        for line in self.lines:
-            name, _, hex_bytes = line.split("|")
-            if name == "MODE":
-                continue
+        for name, _, hex_bytes in self.frames():
             expected = {"CONTROL": p.CONTROL_DLC,
                         "TELEM_MOTION": p.TELEM_MOTION_DLC,
                         "TELEM_STATUS": p.TELEM_STATUS_DLC}[name]
             self.assertEqual(len(hex_bytes) // 2, expected)
 
     def test_every_frame_fits_classic_can(self):
-        for line in self.lines:
-            name, _, hex_bytes = line.split("|")
-            if name == "MODE":
-                continue
+        for name, _, hex_bytes in self.frames():
             self.assertLessEqual(len(hex_bytes) // 2, 8,
                                  "frame exceeds Classic CAN's 8-byte limit")
 
