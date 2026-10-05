@@ -37,8 +37,8 @@ namespace rover {
 // instead of with sleeps.
 typedef uint32_t (*MillisFn)();
 
-static const uint32_t DEFAULT_WATCHDOG_TIMEOUT_MS = 300;
-static const uint32_t DEFAULT_TELEMETRY_PERIOD_MS = 50;  // 20 Hz
+// DEFAULT_WATCHDOG_TIMEOUT_MS and DEFAULT_TELEMETRY_PERIOD_MS come from
+// rover_config.h (via rover_protocol.h).
 
 class RoverController {
 public:

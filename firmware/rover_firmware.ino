@@ -50,11 +50,12 @@ using namespace rover;
 
 // ---------------------------------------------------------------------------
 // Configuration
+//
+// Protocol and timing constants (CAN_BITRATE_HZ, HW_WATCHDOG_MS, timeouts,
+// ids) live in src/rover_config.h. Only board-specific wiring stays here.
 // ---------------------------------------------------------------------------
 
-static const uint32_t CAN_BITRATE_HZ      = 500000;   // 500 kbps
-static const uint32_t HW_WATCHDOG_MS      = 1000;     // loop must feed within
-static const int      LED_PIN             = 13;       // Teensy onboard LED
+static const int      LED_PIN            = 13;       // Teensy onboard LED
 static const int16_t  OVER_CURRENT_CA     = 4000;     // 40.00 A, placeholder
 
 // Flip to false once real encoders / current sensing / steering feedback are

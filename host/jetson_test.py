@@ -29,9 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import can_link  # noqa: E402
 import rover_protocol as rp  # noqa: E402
 import c2_link  # noqa: E402
-
-CONTROL_RATE_HZ = 20
-LINK_TIMEOUT_S = 0.5
+from rover_config import CAN_BITRATE_HZ, CONTROL_RATE_HZ, LINK_TIMEOUT_S  # noqa: E402
 
 
 class JetsonLink:
@@ -161,7 +159,7 @@ def main():
     ap.add_argument("--mock", action="store_true",
                     help="run against the compiled C++ simulator (no hardware)")
     ap.add_argument("--channel", help="CAN interface, e.g. can0 or vcan0")
-    ap.add_argument("--bitrate", type=int, default=500000)
+    ap.add_argument("--bitrate", type=int, default=CAN_BITRATE_HZ)
     ap.add_argument("--duration", type=float, default=10.0)
     args = ap.parse_args()
 

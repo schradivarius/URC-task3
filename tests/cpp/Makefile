@@ -16,6 +16,9 @@ SRC_DIR   = ../../firmware/src
 BUILD_DIR = build
 
 CORE = $(SRC_DIR)/rover_protocol.cpp $(SRC_DIR)/rover_controller.cpp
+# Listed so that editing only a header (e.g. a constant in rover_config.h)
+# still triggers a rebuild instead of silently testing the old binaries.
+HDRS = $(SRC_DIR)/rover_config.h $(SRC_DIR)/rover_protocol.h $(SRC_DIR)/rover_controller.h
 BINS = $(BUILD_DIR)/test_protocol $(BUILD_DIR)/test_controller
 
 .PHONY: all test clean
@@ -24,10 +27,10 @@ all: $(BINS)
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
 
-$(BUILD_DIR)/test_protocol: test_protocol.cpp $(CORE) test_framework.h | $(BUILD_DIR)
+$(BUILD_DIR)/test_protocol: test_protocol.cpp $(CORE) $(HDRS) test_framework.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) test_protocol.cpp $(CORE) -o $@
 
-$(BUILD_DIR)/test_controller: test_controller.cpp $(CORE) test_framework.h | $(BUILD_DIR)
+$(BUILD_DIR)/test_controller: test_controller.cpp $(CORE) $(HDRS) test_framework.h | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) test_controller.cpp $(CORE) -o $@
 
 test: $(BINS)
