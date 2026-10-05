@@ -15,7 +15,8 @@ static void control_round_trips() {
         {     0,     0, MODE_DISABLED,   1, INDICATOR_OFF, 0},
         {  1000, -1000, MODE_AUTONOMOUS, 0, INDICATOR_OFF, 0},
         { -1000,  1000, MODE_MANUAL,     1, INDICATOR_OFF, 0},
-        {-32768, 32767, MODE_MANUAL,     0, INDICATOR_OFF, 0},   // int16 extremes
+        // int16 extremes are out of command range, so they no longer decode;
+        // see out_of_range_commands_are_rejected_at_decode.
     };
     for (const ControlMsg& in : cases) {
         uint8_t buf[8] = {0};
@@ -165,6 +166,38 @@ static void protocol_error_has_its_own_fault_bit() {
     CHECK_EQ(FAULT_PROTOCOL_ERROR, 0x40);        // reserved bit, no DLC change
 }
 
+// --- command range validation -----------------------------------------------
+
+static void command_range_boundaries_are_exact() {
+    // Off-by-one here is the whole bug: +/-1000 is full scale and legal,
+    // +/-1001 is a sender that disagrees with us about the scale.
+    CHECK(isValidCommand(CMD_MIN));
+    CHECK(isValidCommand(CMD_MAX));
+    CHECK(isValidCommand(0));
+    CHECK(!isValidCommand(CMD_MIN - 1));
+    CHECK(!isValidCommand(CMD_MAX + 1));
+    CHECK(!isValidCommand(-32768));
+    CHECK(!isValidCommand(32767));
+}
+
+static void out_of_range_commands_are_rejected_at_decode() {
+    // Rejected, not clamped: clamping would quietly turn a misunderstood
+    // command into full throttle. Both fields are checked independently.
+    const int16_t bad[] = {-32768, CMD_MIN - 1, CMD_MAX + 1, 32767};
+    ControlMsg out;
+    for (int16_t v : bad) {
+        uint8_t buf[8] = {0};
+        CHECK(!decodeControl(buf, encodeControl({v, 0, MODE_MANUAL, 0, INDICATOR_OFF, 0}, buf), out));
+        CHECK(!decodeControl(buf, encodeControl({0, v, MODE_MANUAL, 0, INDICATOR_OFF, 0}, buf), out));
+    }
+    // the encoder itself still writes any int16: validation is the
+    // receiver's job, and the receiver is what must fail closed
+    uint8_t buf[8] = {0};
+    CHECK_EQ(encodeControl({-32768, 32767, MODE_MANUAL, 0, INDICATOR_OFF, 0}, buf), CONTROL_DLC);
+    CHECK_EQ(buf[0], 0x00); CHECK_EQ(buf[1], 0x80);   // int16 extremes still
+    CHECK_EQ(buf[2], 0xFF); CHECK_EQ(buf[3], 0x7F);   // encode little-endian
+}
+
 // --- range handling ---------------------------------------------------------
 
 static void encoder_wrap_avoids_undefined_behaviour() {
@@ -214,6 +247,8 @@ int main() {
     RUN_TEST(disabled_is_known_but_not_drivable);
     RUN_TEST(undefined_mode_is_rejected_at_decode);
     RUN_TEST(protocol_error_has_its_own_fault_bit);
+    RUN_TEST(command_range_boundaries_are_exact);
+    RUN_TEST(out_of_range_commands_are_rejected_at_decode);
     RUN_TEST(encoder_wrap_avoids_undefined_behaviour);
     RUN_TEST(cmd_age_sentinel_is_distinct_from_saturation);
     RUN_TEST(fault_names_reports_combined_faults);

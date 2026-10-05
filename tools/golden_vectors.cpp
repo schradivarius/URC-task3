@@ -61,6 +61,13 @@ int main() {
                     modePermitsMotion((uint8_t)m) ? 1 : 0);
     }
 
+    // Command-range predicate at and around the boundaries, so the Jetson
+    // cannot think a value is sendable while the controller rejects it.
+    const int16_t range_cases[] = {-32768, -1001, -1000, -999, 0, 999, 1000, 1001, 32767};
+    for (int16_t v : range_cases) {
+        std::printf("RANGE|%d|%d\n", v, isValidCommand(v) ? 1 : 0);
+    }
+
     struct { int16_t fb, ca; uint8_t f; uint16_t age; } statuses[] = {
         {0, 0, 0, 0},
         {-1000, -2500, FAULT_OVER_CURRENT, 42},

@@ -70,6 +70,21 @@ class TestDescribeFaults(unittest.TestCase):
                 self.assertEqual(rp.describe_faults(fault_status), expected)
 
 
+def send_raw_control(fixture, drive, steer, mode, seconds):
+    """Send a correctly sized CONTROL frame with arbitrary field values for
+    `seconds`, bypassing any validation a well-behaved sender would apply."""
+    import struct
+    payload = struct.pack(rp.CONTROL_FMT, drive, steer, mode, 0,
+                          rp.INDICATOR_OFF, 0)
+    assert len(payload) == rp.CONTROL_DLC
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        fixture.link.send(rp.CAN_ID_CONTROL, payload)
+        fixture.jl.poll()
+        time.sleep(0.02)
+    fixture.jl.poll()
+
+
 class TestEndToEnd(RoverFixture):
     def test_normal_operation(self):
         self.drive(0.6)
@@ -152,16 +167,15 @@ class TestUndefinedMode(RoverFixture):
     """
 
     def send_raw_mode(self, mode, seconds, drive=1000, steer=500):
-        """Bypass encode_control's own validation to put an arbitrary byte on
-        the bus, the way a mismatched or faulty sender would."""
-        import struct
-        payload = struct.pack(rp.CONTROL_FMT, drive, steer, mode, 0, rp.INDICATOR_OFF, 0)
-        end = time.monotonic() + seconds
-        while time.monotonic() < end:
-            self.link.send(rp.CAN_ID_CONTROL, payload)
-            self.jl.poll()
-            time.sleep(0.02)
-        self.jl.poll()
+        """Put an arbitrary mode byte on the bus, the way a mismatched or
+        faulty sender would.
+
+        Packs with rp.CONTROL_FMT so the frame has the CORRECT length. A
+        hand-written format here once fell a byte short after the indicator
+        field was added, so these tests were passing on a wrong-DLC rejection
+        rather than on the undefined mode they claim to test.
+        """
+        send_raw_control(self, drive, steer, mode, seconds)
 
     def test_undefined_mode_never_moves_the_rover(self):
         for mode in (3, 42, 255):
@@ -206,6 +220,32 @@ class TestUndefinedMode(RoverFixture):
         self.assertNotIn("JETSON_HEARTBEAT_LOST", self.faults())
 
 
+class TestCommandRange(RoverFixture):
+    """drive/steer outside CMD_MIN..CMD_MAX, end to end against the real
+    compiled controller. Rejected, never clamped to full scale."""
+
+    def test_out_of_range_drive_never_moves_the_rover(self):
+        send_raw_control(self, rp.CMD_MAX + 1, 0, rp.MODE_MANUAL, 0.6)
+        self.assertEqual(self.jl.motion["enc_left"], 0,
+                         "rover moved on an out-of-range drive command")
+        self.assertEqual(self.jl.status["current_ca"], 0)
+
+    def test_out_of_range_command_is_reported_as_a_protocol_error(self):
+        send_raw_control(self, 0, rp.CMD_MIN - 1, rp.MODE_MANUAL, 0.5)
+        self.assertIn("PROTOCOL_ERROR", self.faults())
+
+    def test_out_of_range_command_does_not_keep_the_watchdog_alive(self):
+        self.drive(0.4)                            # healthy first
+        send_raw_control(self, 30000, 0, rp.MODE_MANUAL, 0.7)
+        self.assertIn("JETSON_HEARTBEAT_LOST", self.faults(),
+                      "out-of-range commands refreshed the command watchdog")
+
+    def test_full_scale_is_still_accepted(self):
+        self.drive(0.5, drive=rp.CMD_MAX, steer=rp.CMD_MIN)
+        self.assertEqual(self.faults(), [])
+        self.assertGreater(self.jl.motion["enc_left"], 0)
+
+
 class TestBusHygiene(RoverFixture):
     """A shared CAN bus carries motor-controller and payload traffic too."""
 
@@ -233,7 +273,7 @@ class TestBusHygiene(RoverFixture):
         self.drive(0.4)
         end = time.monotonic() + 0.7
         while time.monotonic() < end:
-            self.link.send(rp.CAN_ID_CONTROL, b"\x00\x00\x00\x00")   # 4 bytes, not 8
+            self.link.send(rp.CAN_ID_CONTROL, b"\x00\x00\x00\x00")   # 4 bytes, not CONTROL_DLC
             self.jl.poll()
             time.sleep(0.02)
         self.jl.poll()

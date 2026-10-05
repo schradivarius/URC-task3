@@ -96,7 +96,8 @@ public:
     uint32_t framesIgnored() const { return frames_ignored_; }
 
     // True when the most recent frame addressed to CAN_ID_CONTROL could not be
-    // interpreted (wrong DLC, or a mode this firmware does not define). Clears
+    // interpreted (wrong DLC, a mode this firmware does not define, or a
+    // drive/steer outside CMD_MIN..CMD_MAX). Clears
     // when a valid frame arrives, so it reports a live condition rather than
     // latching for the session. Surfaced as FAULT_PROTOCOL_ERROR.
     bool protocolError() const { return protocol_error_; }

@@ -63,6 +63,10 @@ bool isKnownIndicator(uint8_t indicator_request){
     return indicator_request == INDICATOR_OFF || indicator_request == INDICATOR_BLUE || indicator_request == INDICATOR_RED || indicator_request == INDICATOR_GREEN_FLASH;
 }       
 
+bool isValidCommand(int16_t value) {
+    return value >= CMD_MIN && value <= CMD_MAX;
+}
+
 bool modePermitsMotion(uint8_t mode) {
     // Whitelist. Every value not named here -- including DISABLED and every
     // undefined value -- means stop. See the note in rover_protocol.h.
@@ -128,8 +132,13 @@ bool decodeControl(const uint8_t* buf, uint8_t len, ControlMsg& out) {
     // rover, not be tolerated.
     if (!isKnownMode(buf[4])) return false;
     if (!isKnownIndicator(buf[6])) return false;
-    out.drive_cmd = getI16(buf + 0);
-    out.steer_cmd = getI16(buf + 2);
+    // Same reasoning for an out-of-range drive or steer: reject, never clamp.
+    // See isValidCommand() in rover_protocol.h.
+    const int16_t drive = getI16(buf + 0);
+    const int16_t steer = getI16(buf + 2);
+    if (!isValidCommand(drive) || !isValidCommand(steer)) return false;
+    out.drive_cmd = drive;
+    out.steer_cmd = steer;
     out.mode      = buf[4];
     out.stop      = buf[5] ? 1 : 0;
     out.indicator_request = buf[6];
