@@ -32,33 +32,11 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// CAN ids, payload sizes (DLC), modes, valid command ranges and timing all
+// live in rover_config.h, so there is one place to change them.
+#include "rover_config.h"
+
 namespace rover {
-
-// ---------------------------------------------------------------------------
-// CAN identifiers.
-//
-// On CAN the identifier is ALSO the priority: arbitration is bitwise and
-// dominant-low, so the NUMERICALLY LOWEST id wins the bus, and the loser
-// backs off without its message being corrupted. So this table is a priority
-// ordering, not just a set of names. Commands outrank telemetry because a
-// late command can hurt the rover and late telemetry only annoys an operator.
-//
-// 0x000-0x0FF is deliberately left free above CONTROL for a future dedicated
-// e-stop frame, which must outrank everything here.
-// ---------------------------------------------------------------------------
-
-enum : uint32_t {
-    CAN_ID_CONTROL       = 0x100,  // Jetson -> Teensy, highest priority in use
-    CAN_ID_TELEM_MOTION  = 0x200,  // Teensy -> Jetson, encoders
-    CAN_ID_TELEM_STATUS  = 0x201,  // Teensy -> Jetson, steering/current/faults
-};
-
-// Operating modes (ControlMsg::mode)
-enum : uint8_t {
-    MODE_DISABLED   = 0,
-    MODE_MANUAL     = 1,
-    MODE_AUTONOMOUS = 2,
-};
 
 // Indicator Values (ControlMsg: LED indicator)          
 enum : uint8_t {
@@ -87,17 +65,6 @@ enum : uint8_t {
 enum : uint16_t {
     CMD_AGE_UNKNOWN = 0xFFFF,  // no valid CONTROL frame has EVER arrived
     CMD_AGE_MAX     = 0xFFFE,  // saturation ceiling for a real measurement
-};
-
-// Payload sizes. Every message fits in 8 bytes ON PURPOSE: that is Classic
-// CAN's limit, so this protocol runs unchanged on a Classic bus (CAN1/CAN2)
-// or a CAN FD bus (CAN3). Designing a 15-byte telemetry frame would have
-// locked the rover into FD-capable transceivers on every node, including the
-// motor controllers, many of which are Classic-only.
-enum : uint8_t {
-    CONTROL_DLC      = 7,
-    TELEM_MOTION_DLC = 8,
-    TELEM_STATUS_DLC = 8,
 };
 
 static const int32_t INT32_MIN_V = -2147483647 - 1;

@@ -18,17 +18,20 @@ that same compiled code driven over a pipe -- see tools/rover_sim.cpp.
 Mirrors firmware/src/rover_protocol.h. Read that file for the design rationale.
 """
 
+import os
 import struct
+import sys
 
-# --- CAN identifiers (also the bus priority: lowest id wins arbitration) ---
-CAN_ID_CONTROL      = 0x100
-CAN_ID_TELEM_MOTION = 0x200
-CAN_ID_TELEM_STATUS = 0x201
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# --- operating modes ---
-MODE_DISABLED   = 0
-MODE_MANUAL     = 1
-MODE_AUTONOMOUS = 2
+# CAN ids, modes, valid command ranges and timing live in rover_config.py.
+# Re-exported here so existing callers can keep writing rp.CAN_ID_CONTROL.
+from rover_config import (  # noqa: E402,F401
+    CAN_ID_CONTROL, CAN_ID_TELEM_MOTION, CAN_ID_TELEM_STATUS,
+    MODE_DISABLED, MODE_MANUAL, MODE_AUTONOMOUS, MODE_MAX,
+    CMD_MIN, CMD_MAX, PROTOCOL_VERSION,
+)
+
 MODE_NAMES = {MODE_DISABLED: "DISABLED", MODE_MANUAL: "MANUAL",
               MODE_AUTONOMOUS: "AUTONOMOUS"}
 

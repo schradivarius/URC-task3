@@ -17,7 +17,11 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import threading
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rover_config import CAN_BITRATE_HZ  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SIM_SOURCES = [
@@ -25,13 +29,19 @@ SIM_SOURCES = [
     os.path.join(REPO, "firmware", "src", "rover_controller.cpp"),
     os.path.join(REPO, "firmware", "src", "rover_protocol.cpp"),
 ]
+# Headers count too: a constant changed only in rover_config.h must still
+# rebuild the simulator, or the tests run against stale message sizes.
+SIM_HEADERS = [
+    os.path.join(REPO, "firmware", "src", name)
+    for name in ("rover_config.h", "rover_protocol.h", "rover_controller.h")
+]
 SIM_BINARY = os.path.join(REPO, "tests", "cpp", "build", "rover_sim")
 
 
 def build_sim(force=False):
     """Compile the simulator if needed. Returns its path."""
     if not force and os.path.exists(SIM_BINARY):
-        newest_src = max(os.path.getmtime(s) for s in SIM_SOURCES)
+        newest_src = max(os.path.getmtime(s) for s in SIM_SOURCES + SIM_HEADERS)
         if os.path.getmtime(SIM_BINARY) >= newest_src:
             return SIM_BINARY
     cxx = os.environ.get("CXX") or shutil.which("g++") or shutil.which("clang++")
@@ -101,7 +111,7 @@ class SimLink:
 class SocketCanLink:
     """python-can on a real (or virtual) CAN interface."""
 
-    def __init__(self, channel="can0", bitrate=500000):
+    def __init__(self, channel="can0", bitrate=CAN_BITRATE_HZ):
         import can   # lazy: the sim path must not require python-can
         self.bus = can.Bus(channel=channel, interface="socketcan", bitrate=bitrate)
 
