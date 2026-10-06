@@ -56,6 +56,7 @@ static const uint32_t CAN_BITRATE_HZ      = 500000;   // 500 kbps
 static const uint32_t HW_WATCHDOG_MS      = 1000;     // loop must feed within
 static const int      LED_PIN             = 13;       // Teensy onboard LED
 static const int16_t  OVER_CURRENT_CA     = 4000;     // 40.00 A, placeholder
+static const int16_t  UNDERVOLTAGE_CV     = 2000;     // 20.00 V, placeholder
 
 // Flip to false once real encoders / current sensing / steering feedback are
 // wired in. See readSensors() for where the real code goes.
@@ -68,7 +69,7 @@ FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_16> Can;
 WDT_T4<WDT1> wdt;
 
 static RoverController* ctl = nullptr;
-static uint8_t g_boot_faults = 0;
+static uint16_t g_boot_faults = 0;
 
 // ---------------------------------------------------------------------------
 // Sensor / motor I/O -- placeholder implementations.
@@ -87,11 +88,13 @@ static int32_t sim_enc_right = 0;
 static int16_t sim_steer_fb  = 0;
 
 struct SensorReading {
-    int32_t enc_left;
-    int32_t enc_right;
-    int16_t steer_fb;
-    int16_t current_ca;
-    uint8_t fault_bits;
+    int32_t  enc_left;
+    int32_t  enc_right;
+    int16_t  steer_fb;
+    int16_t  current_ca;   // SIGNED centiamps  (1 cA = 10 mA)
+    int16_t  voltage_cv;   // SIGNED centivolts (1 cV = 10 mV)
+    uint16_t fault_bits;
+    uint8_t  controller_health;  // CTRL_HEALTH_*
 };
 
 static SensorReading readSensors(int16_t drive, int16_t steer, bool stopped) {
@@ -101,9 +104,13 @@ static SensorReading readSensors(int16_t drive, int16_t steer, bool stopped) {
         //   enc_*       : i.MX RT quadrature encoder peripherals, or CAN
         //   steer_fb    : analogRead() scaled into -1000..1000
         //   current_ca  : analogRead() scaled to SIGNED centiamps (1 cA=10 mA)
+        //   voltage_cv  : analogRead() on the pack divider, SIGNED centivolts
         //   fault_bits  : FAULT_OVER_CURRENT / FAULT_ENCODER_FAULT / etc.
+        //   controller_health : CTRL_HEALTH_* from motor-driver telemetry,
+        //                 which on a CAN bus arrives as its own messages
         r.enc_left = 0; r.enc_right = 0; r.steer_fb = 0;
-        r.current_ca = 0; r.fault_bits = 0;
+        r.current_ca = 0; r.voltage_cv = 0; r.fault_bits = 0;
+        r.controller_health = CTRL_HEALTH_NOT_REPORTED;
         return r;
     }
 
@@ -123,7 +130,12 @@ static SensorReading readSensors(int16_t drive, int16_t steer, bool stopped) {
     r.enc_right  = sim_enc_right;
     r.steer_fb   = sim_steer_fb;
     r.current_ca = stopped ? 0 : static_cast<int16_t>(abs(d) * 3 / 2);
-    r.fault_bits = (r.current_ca > OVER_CURRENT_CA) ? FAULT_OVER_CURRENT : 0;
+    // Fake 24 V pack sagging a little under load.
+    r.voltage_cv = static_cast<int16_t>(2400 - abs(d) / 40);
+    r.fault_bits = 0;
+    if (r.current_ca > OVER_CURRENT_CA) r.fault_bits |= FAULT_OVER_CURRENT;
+    if (r.voltage_cv < UNDERVOLTAGE_CV) r.fault_bits |= FAULT_UNDERVOLTAGE;
+    r.controller_health = CTRL_HEALTH_NOT_REPORTED;
     return r;
 }
 
@@ -139,7 +151,7 @@ static void setMotorOutputs(int16_t drive, int16_t steer, bool stopped) {
 // Boot fault detection
 // ---------------------------------------------------------------------------
 
-static uint8_t detectBootFault() {
+static uint16_t detectBootFault() {
     // SRC_SRSR is the i.MX RT reset status register; a watchdog reset means
     // the previous run of this firmware stopped feeding the watchdog, i.e. it
     // hung or crashed. The Jetson needs to know: telemetry resuming after an
@@ -160,18 +172,37 @@ static uint8_t detectBootFault() {
 // Telemetry
 // ---------------------------------------------------------------------------
 
+// Four frames per cycle, because each must fit Classic CAN's 8 bytes once the
+// per-frame sequence number and CRC are accounted for. All four carry the SAME
+// sequence number, which is how the Jetson tells a coherent snapshot from one
+// torn across two cycles. See rover_protocol.h for why not one CAN FD frame.
 static void sendTelemetry(const SensorReading& s) {
+    const uint8_t seq = ctl->telemetrySeq();
     CAN_message_t frame;
 
-    TelemetryMotion motion = {s.enc_left, s.enc_right};
-    frame.id  = CAN_ID_TELEM_MOTION;
-    frame.len = encodeTelemetryMotion(motion, frame.buf);
+    TelemetryDriveL dl = ctl->buildDriveL(s.enc_left, s.steer_fb);
+    frame.id  = CAN_ID_TELEM_DRIVE_L;
+    frame.len = encodeTelemetryDriveL(dl, seq, frame.buf);
     Can.write(frame);
 
-    TelemetryStatus status =
-        ctl->buildStatus(s.steer_fb, s.current_ca, s.fault_bits, g_boot_faults);
-    frame.id  = CAN_ID_TELEM_STATUS;
-    frame.len = encodeTelemetryStatus(status, frame.buf);
+    TelemetryDriveR dr = ctl->buildDriveR(s.enc_right);
+    frame.id  = CAN_ID_TELEM_DRIVE_R;
+    frame.len = encodeTelemetryDriveR(dr, seq, frame.buf);
+    Can.write(frame);
+
+    TelemetryPower pw =
+        ctl->buildPower(s.current_ca, s.voltage_cv, s.fault_bits, g_boot_faults);
+    frame.id  = CAN_ID_TELEM_POWER;
+    frame.len = encodeTelemetryPower(pw, seq, frame.buf);
+    Can.write(frame);
+
+    // c2_link is left at LINK_NOT_REPORTED: forwarding C2 state from the
+    // Jetson is a separate work item, and an honest "nobody told us" beats a
+    // misleading LINK_OK. It is deliberately NOT derived from the Jetson link
+    // -- the two are separate links and must never be treated as equivalent.
+    TelemetryState st = ctl->buildState(s.controller_health, LINK_NOT_REPORTED);
+    frame.id  = CAN_ID_TELEM_STATE;
+    frame.len = encodeTelemetryState(st, seq, frame.buf);
     Can.write(frame);
 }
 

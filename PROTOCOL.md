@@ -1,34 +1,27 @@
-# Rover Onboard Computer ↔ Embedded Controller Protocol (v0.3.1 — CAN)
+# Rover Onboard Computer ↔ Embedded Controller Protocol (v0.4)
 
 **Scope:** Onboard computer (Jetson Orin Nano, candidate) ↔ embedded controller
-(**Teensy 4.1**, NXP i.MX RT1062, running C++ / Teensyduino), over **CAN**.
+(**Teensy 4.1**, NXP i.MX RT1062, C++ / Teensyduino), over **CAN**.
 
-> **What changed from v0.2, and why the spec got shorter.** v0.2 ran over a
-> UART and carried a start byte, a length byte, a CRC-16 and a 108-line
-> resynchronizing stream parser — all of it there because a byte stream has no
-> message boundaries. CAN delivers whole frames or nothing, with a 15-bit CRC
-> and automatic retransmission **in silicon**. So sections 3 and 5 of v0.2 are
-> gone, and with them an entire class of bug: a corrupted length byte stalling
-> the link past the watchdog is now *structurally impossible* rather than
-> merely tested for.
->
-> What survived untouched is everything that was never about the wire — the
-> message fields, the fault bitmask, the command-age semantics and the
-> fail-safe rule. That is not luck; it is why the safety logic was a separate
-> module from the framing in the first place.
+> **v0.4 — structured command and telemetry packets.** Adds a sequence number
+> and an application-layer CRC-8 in both directions, plus the autonomy-abort,
+> return-request and status-indicator fields, voltage, operating-mode echo,
+> per-link health and low-level controller health. `fault_status` widens to
+> `uint16`. Telemetry becomes **four frames** carrying one shared sequence
+> number. Full field tables with units and update rates are in section 3.
 
 ---
 
 ## 1. Design goals
 
 - **No hardware dependency for development.** The protocol, the safety logic
-  and the full exchange all run and are tested on a laptop with no board, no
-  CAN interface and no drivers (section 7).
-- **Fail-safe on silence.** If the onboard computer goes quiet, the rover
-  stops. This is the single most important property here.
-- **One implementation of the safety rule.** It exists once, in C++, and the
-  simulator used by the host tests *is that compiled code* (section 8).
-- **Portable across CAN flavours.** Every message fits 8 bytes, so this runs on
+  and the full exchange run and are tested on a laptop with no board, no CAN
+  interface and no drivers (section 7).
+- **Fail-safe on silence**, and fail *closed* on anything unrecognized.
+- **End-to-end protected**, not merely wire-protected (section 4).
+- **One implementation of the safety rule**, with the codec pinned across the
+  two languages that must both speak it (section 8).
+- **Portable across CAN flavours.** Every frame is 8 bytes, so this runs on
   Classic CAN or CAN FD, alongside Classic-only motor controllers.
 
 ## 2. Link basics
@@ -37,161 +30,281 @@
 |---|---|
 | Physical layer | CAN 2.0B, differential twisted pair, **120 Ω termination at both ends** |
 | Bit rate | 500 kbps (placeholder; 1 Mbps is fine at these frame sizes) |
-| Bus | Teensy 4.1 **CAN3** (the FD-capable bus) — CAN1/CAN2 work unchanged |
-| Frame format | Standard, 11-bit identifiers |
-| CONTROL rate | 20 Hz (Jetson → controller) |
-| TELEMETRY rate | 20 Hz (controller → Jetson) |
+| Bus | Teensy 4.1 **CAN3** (FD-capable) — CAN1/CAN2 work unchanged |
+| Frame format | Standard, 11-bit identifiers, **every frame DLC 8** |
+| CONTROL rate | 20 Hz (1 frame per cycle) |
+| TELEMETRY rate | 20 Hz (4 frames per cycle = 80 frames/s) |
 | Byte order | Little-endian, written byte-by-byte (not struct-punned) |
 
-At 500 kbps an 8-byte frame is roughly 220 µs of airtime — about 0.4% of the
-50 ms period. **Throughput is nowhere near the constraint**; CAN was chosen for
-determinism and noise immunity, not speed. Say so plainly when anyone asks.
+At 500 kbps an 8-byte frame is roughly 220 µs of airtime. Five frames per cycle
+is ~1.1 ms of a 50 ms period — about **2% bus utilisation**. Throughput is
+nowhere near the constraint; CAN was chosen for determinism and noise immunity,
+not speed. Say so plainly when anyone asks.
 
 ### 2.1 Identifiers *are* priorities
 
 CAN arbitration is bitwise and dominant-low, so the **numerically lowest id
-wins the bus**, and the loser backs off without its message being corrupted.
-The id table is therefore a priority ordering, not just a set of names.
+wins the bus** and the loser backs off without its message being corrupted.
+This table is a priority ordering, not just a set of names.
 
-| ID | Message | Direction | DLC |
-|---|---|---|---|
-| `0x000`–`0x0FF` | *reserved* — headroom for a dedicated e-stop frame | — | — |
-| **`0x100`** | `CONTROL` | Jetson → controller | 6 |
-| **`0x200`** | `TELEM_MOTION` | controller → Jetson | 8 |
-| **`0x201`** | `TELEM_STATUS` | controller → Jetson | 7 |
+| ID | Message | Direction | DLC | Rate |
+|---|---|---|---|---|
+| `0x000`–`0x0FF` | *reserved* — headroom for a dedicated e-stop frame | — | — | — |
+| **`0x100`** | `CONTROL` | Jetson → controller | 8 | 20 Hz |
+| **`0x200`** | `TELEM_DRIVE_L` | controller → Jetson | 8 | 20 Hz |
+| **`0x201`** | `TELEM_DRIVE_R` | controller → Jetson | 8 | 20 Hz |
+| **`0x202`** | `TELEM_POWER` | controller → Jetson | 8 | 20 Hz |
+| **`0x203`** | `TELEM_STATE` | controller → Jetson | 8 | 20 Hz |
 
 Commands outrank telemetry because a late command can hurt the rover and late
-telemetry only annoys an operator. The block below `0x100` is deliberately
-empty so a future e-stop frame can outrank everything here without renumbering.
+telemetry only annoys an operator.
 
-## 3. Messages
+### 2.2 Frame envelope
 
-Telemetry is **split across two frames** so each fits Classic CAN's 8-byte
-limit. A single 15-byte frame would have required CAN FD transceivers on every
-node of the bus, including motor controllers that are commonly Classic-only.
-Separate ids also mean a lost motion frame does not cost the Jetson its fault
-status.
+Every frame, both directions, has the same shape:
 
-### 3.1 `CONTROL` — `0x100`, DLC 6
+```
+ byte:  0    1    2    3    4    5      6      7
+      +----+----+----+----+----+----+-------+-------+
+      |     6-byte message payload     |  SEQ  | CRC8  |
+      +----+----+----+----+----+----+-------+-------+
+```
 
-| Field | Type | Range | Meaning |
-|---|---|---|---|
-| `drive_cmd` | int16 | -1000..1000 | Desired drive, tenths of a percent of full effort |
-| `steer_cmd` | int16 | -1000..1000 | Desired steering, tenths of a percent of full range |
-| `mode` | uint8 | 0/1/2 | `0=DISABLED, 1=MANUAL, 2=AUTONOMOUS` |
-| `stop` | uint8 | 0/1 | Forces an immediate stop regardless of `mode` |
+| Field | Type | Units | Range | Meaning |
+|---|---|---|---|---|
+| `seq` | uint8 | frames | 0–255, **wraps** | Increments once per transmitted cycle. Receiver uses the delta: 1 healthy, 0 duplicate, >1 frames lost. |
+| `crc8` | uint8 | — | 0–255 | CRC-8/SAE-J1850 over the CAN id then bytes 0–6. See section 4. |
 
-`stop` is a separate field rather than a third mode value so an e-stop can be
-asserted **and released** without a mode round trip. It takes effect on the
-control cycle it arrives — there is no coast frame.
+**Why four telemetry frames and not one CAN FD frame.** 6 payload bytes × 4
+frames = 24 bytes, which is what the field list needs. One 64-byte FD frame
+would hold it all atomically, but would require FD-capable transceivers on
+every node of the bus including Classic-only motor controllers. The field
+definitions would not change if you later move telemetry to FD.
 
-**`mode` is validated, and an undefined value stops the rover.** The field is a
-uint8, so it carries 256 possible values where three are defined. Two separate
-questions follow, and conflating them was [issue #4](https://github.com/schradivarius/URC-task3/issues/4):
+**Snapshot tearing.** All four telemetry frames of one cycle carry the **same
+`seq`**. The Jetson therefore knows whether the four frames it holds came from
+one cycle or straddle two, and can discard or flag a torn snapshot instead of
+silently mixing a fresh encoder reading with a stale fault word.
+`host/jetson_test.py` counts torn snapshots; a clean link produces zero.
+
+## 3. Message definitions
+
+### 3.1 `CONTROL` — `0x100`, DLC 8, 20 Hz, Jetson → controller
+
+| Byte | Field | Type | Units | Valid range | Meaning |
+|---|---|---|---|---|---|
+| 0–1 | `drive_cmd` | int16 | 0.1 % of full drive effort | −1000 … +1000 | Desired drive. Positive is forward. Values outside the range are **not** clamped by the protocol; the motor layer owns that. |
+| 2–3 | `steer_cmd` | int16 | 0.1 % of full steering range | −1000 … +1000 | Desired steering. Positive is right. |
+| 4 | `mode` | uint8 | enum | **0, 1, 2 only** | `0=DISABLED, 1=MANUAL, 2=AUTONOMOUS`. Any other value **rejects the frame** — see 3.1.1. |
+| 5 | `flags` | uint8 | bitfield | see below | Four fields packed; see 3.1.2. |
+| 6 | `seq` | uint8 | frames | 0–255 wraps | See 2.2. |
+| 7 | `crc8` | uint8 | — | 0–255 | See 4. |
+
+#### 3.1.1 `mode` validation
+
+`mode` is a uint8 carrying 256 possible values where three are defined. Two
+separate questions follow, and conflating them was a real bug:
 
 | Question | Answer |
 |---|---|
-| Is this value *defined*? (`isKnownMode`) | `0`, `1`, `2` — **`DISABLED` is valid**, a legitimate command meaning "do not move" |
-| May the rover *move*? (`modePermitsMotion`) | `MANUAL` or `AUTONOMOUS` only — a **whitelist** |
+| Is this value *defined*? (`isKnownMode`) | `0`, `1`, `2`. **`DISABLED` is valid** — a legitimate command meaning "do not move". |
+| May the rover *move*? (`modePermitsMotion`) | `MANUAL` or `AUTONOMOUS` only — a **whitelist**. |
 
-A receiver **rejects** a frame carrying an undefined mode, exactly as it
-rejects a wrong DLC: the sender disagrees with us about the protocol. The
-rejected frame does not refresh the command watchdog, and `PROTOCOL_ERROR` is
-raised so the stop is explainable rather than silent.
+An undefined mode **rejects the whole frame**, exactly like a bad CRC: the
+sender disagrees with us about the protocol. Deliberately **not**
+forward-compatible — a newer peer sending a mode this firmware does not
+implement must stop this rover. Adding a fourth mode means updating every
+controller on the bus *before* a host may send it.
 
-This is deliberately **not** forward-compatible the way an unknown CAN id is.
-A newer peer sending a mode this firmware does not implement must stop this
-rover, not be tolerated. If you add a fourth mode, every controller on the bus
-needs the update before a host may send it.
+#### 3.1.2 `flags` byte (byte 5)
 
-### 3.2 `TELEM_MOTION` — `0x200`, DLC 8
+| Bits | Field | Type | Range | Meaning |
+|---|---|---|---|---|
+| 0 | `stop` | bool | 0/1 | Stop now, regardless of `mode`. Takes effect on the cycle it arrives — no coast frame. Separate from `mode` so an e-stop can be asserted **and released** without a mode round trip. |
+| 1 | `autonomy_abort` | bool | 0/1 | Abandon the current autonomous task. **Forces a stop while `mode == AUTONOMOUS`**; in `MANUAL` the operator is already driving, so it has no autonomous task to abort and does not stop. ⚠️ *This behaviour is a judgement call, not spelled out by the requirement — flagged for review.* |
+| 2 | `return_request` | bool | 0/1 | Begin the return-to-base behaviour. Carried and reported; the controller takes no low-level action on it. |
+| 3–5 | `indicator_request` | uint8 | **0–4** | Requested status-indicator state. `0=OFF, 1=TELEOP, 2=AUTONOMOUS, 3=ARRIVED, 4=FAULT`. 5–7 are reachable on the wire and **reject the frame**. |
+| 6–7 | *reserved* | — | **must be 0** | Set bits **reject the frame**: a newer sender is using a field we cannot interpret, so the rest of the byte is untrustworthy. |
 
-| Field | Type | Meaning |
-|---|---|---|
-| `enc_left` | int32 | Left cumulative encoder ticks. **Wraps** — treat as relative. |
-| `enc_right` | int32 | Right cumulative encoder ticks |
+### 3.2 `TELEM_DRIVE_L` — `0x200`, DLC 8, 20 Hz
 
-### 3.3 `TELEM_STATUS` — `0x201`, DLC 7
+| Byte | Field | Type | Units | Valid range | Meaning |
+|---|---|---|---|---|---|
+| 0–3 | `enc_left` | int32 | encoder ticks | full int32, **wraps** | Left-side cumulative count. **Relative only** — difference consecutive readings and handle rollover. |
+| 4–5 | `steer_fb` | int16 | 0.1 % of full steering range | −1000 … +1000 | Measured steering position, same scale as `steer_cmd`. |
 
-| Field | Type | Range | Meaning |
-|---|---|---|---|
-| `steer_fb` | int16 | -1000..1000 | Measured steering, same scale as `steer_cmd` |
-| `current_ca` | **int16** | ±327.67 A | Current in **centiamps** (1 cA = 10 mA). **Signed.** |
-| `fault_status` | uint8 | bitmask | See below |
-| `cmd_age_ms` | uint16 | see below | ms since the last valid `CONTROL` frame |
+### 3.3 `TELEM_DRIVE_R` — `0x201`, DLC 8, 20 Hz
 
-`current_ca` is signed because a braking motor genuinely produces negative
-current; unsigned would wrap that to a large positive value, which is the worst
-kind of bad telemetry because it looks plausible on a dashboard.
+| Byte | Field | Type | Units | Valid range | Meaning |
+|---|---|---|---|---|---|
+| 0–3 | `enc_right` | int32 | encoder ticks | full int32, **wraps** | Right-side cumulative count. |
+| 4–5 | `cmd_age_ms` | uint16 | milliseconds | 0 … 65533, plus 2 sentinels | Time since the last **valid** CONTROL frame. See below. |
 
-**Fault bitmask.** Powers of two, so faults combine:
+| `cmd_age_ms` value | Meaning |
+|---|---|
+| 0 … 65533 | A real measurement |
+| `0xFFFE` (`CMD_AGE_MAX`) | Saturation ceiling — "at least 65.534 s" |
+| `0xFFFF` (`CMD_AGE_UNKNOWN`) | **No valid CONTROL frame has ever arrived** |
+
+Two distinct values because "you have never spoken to me" is a wiring or
+bus-config problem while "you stopped speaking 65 s ago" is something that died
+mid-mission. Different diagnoses.
+
+### 3.4 `TELEM_POWER` — `0x202`, DLC 8, 20 Hz
+
+| Byte | Field | Type | Units | Valid range | Meaning |
+|---|---|---|---|---|---|
+| 0–1 | `current_ca` | **int16** | centiamps (1 cA = 10 mA) | −327.68 … +327.67 A | Motor current. **Signed**: a braking motor genuinely produces negative current, and unsigned would wrap it to a huge positive value — the worst kind of bad telemetry, because it looks plausible. |
+| 2–3 | `voltage_cv` | **int16** | centivolts (1 cV = 10 mV) | −327.68 … +327.67 V | Pack voltage. Signed for symmetry and to make a mis-wired sense line obvious rather than enormous. |
+| 4–5 | `fault_status` | **uint16** | bitfield | see below | Active faults. |
+
+**`fault_status`** — widened from `uint8` in v0.4, which had exactly one bit
+left. Bits `0x0001`–`0x0040` keep their v0.3 values.
 
 | Bit | Name | Meaning |
 |---|---|---|
-| `0x01` | `COMM_TIMEOUT` | No valid `CONTROL` frame within the watchdog |
-| `0x02` | `OVER_CURRENT` | Current exceeded a threshold |
-| `0x04` | `ESTOP_ACTIVE` | Hardware or software e-stop engaged |
-| `0x08` | `ENCODER_FAULT` | Encoder reading invalid or stalled |
-| `0x10` | `UNDERVOLTAGE` | Supply voltage low (placeholder) |
-| `0x20` | `FIRMWARE_FAULT` | This boot followed a watchdog reset (section 5.2) |
-| `0x40` | `PROTOCOL_ERROR` | The last frame on our id was uninterpretable: wrong DLC, or an undefined `mode`. Self-clears when a valid frame arrives. |
+| `0x0001` | `COMM_TIMEOUT` | No valid CONTROL frame within the watchdog |
+| `0x0002` | `OVER_CURRENT` | Current exceeded a threshold |
+| `0x0004` | `ESTOP_ACTIVE` | Hardware or software e-stop engaged |
+| `0x0008` | `ENCODER_FAULT` | Encoder reading invalid or stalled |
+| `0x0010` | `UNDERVOLTAGE` | Supply voltage below threshold |
+| `0x0020` | `FIRMWARE_FAULT` | This boot followed a watchdog reset (5.2) |
+| `0x0040` | `PROTOCOL_ERROR` | A frame on our id was uninterpretable: wrong DLC, undefined mode, bad flags or bad indicator |
+| `0x0080` | *reserved* | **`C2_LINK_LOST`, owned by the separate C2 work item. Nothing in v0.4 claims it.** |
+| `0x0100` | `SEQ_GAP` | CONTROL frames were lost, duplicated or reordered |
+| `0x0200` | `CRC_ERROR` | Application-layer CRC mismatch on our id |
+| `0x0400`–`0x8000` | *reserved* | |
 
-**Command age**, with two distinct reserved values:
+`PROTOCOL_ERROR`, `CRC_ERROR` and `SEQ_GAP` all self-clear when a valid,
+contiguous frame arrives, so fixing the sender clears the fault rather than
+leaving it latched and misleading for the rest of the session.
 
-| Value | Meaning |
-|---|---|
-| `0xFFFF` (`CMD_AGE_UNKNOWN`) | No valid `CONTROL` frame has **ever** arrived |
-| `0xFFFE` (`CMD_AGE_MAX`) | Saturation ceiling for a real measurement |
+### 3.5 `TELEM_STATE` — `0x203`, DLC 8, 20 Hz
 
-"You have never spoken to me" is a wiring or bus-configuration problem.
-"You stopped speaking 65 seconds ago" is something that died mid-mission.
-Different diagnoses, so they must be different values.
+| Byte | Field | Type | Units | Valid range | Meaning |
+|---|---|---|---|---|---|
+| 0 | `mode` | uint8 | enum | 0–2 | **Echo** of the mode the controller believes it is in. Without it, a dropped or misread mode change is invisible from outside the rover. |
+| 1 | `jetson_link` | uint8 | enum | 0–3 | Health of the **Jetson ↔ controller** link. |
+| 2 | `c2_link` | uint8 | enum | 0–3 | Health of the **base-station C2** link, as *forwarded by the Jetson*. |
+| 3 | `controller_health` | uint8 | enum | 0–3 | Aggregate low-level motor-driver / ESC health. |
+| 4 | `indicator_state` | uint8 | enum | 0–4 | What the status indicator is **actually displaying**. |
+| 5 | *reserved* | uint8 | — | transmit as 0 | |
 
-## 4. What CAN provides, so we do not
+**Link health enum** (`jetson_link`, `c2_link`):
 
-| Concern | v0.2 (UART) | v0.3 (CAN) |
+| Value | Name | Meaning |
 |---|---|---|
-| Message boundaries | start byte + length byte | hardware |
-| Corruption detection | our CRC-16 bit loop | hardware 15-bit CRC |
-| Corruption recovery | slide one byte, rescan | hardware auto-retransmit, µs |
-| Addressing | none | 11-bit identifier |
-| Priority | none | non-destructive arbitration |
-| A faulty node | corrupts the link | goes bus-off, isolates itself |
+| 0 | `LINK_OK` | Healthy |
+| 1 | `LINK_DEGRADED` | Intermittent: losses, gaps or CRC errors seen within the last 1000 ms |
+| 2 | `LINK_LOST` | Down |
+| 3 | `LINK_NOT_REPORTED` | **Nobody has told us about this link** |
 
-**The checks we still owe.** CAN proves a frame arrived *intact*; it cannot
-prove the sender agrees on what the bytes *mean*, and it cannot catch
-corruption that happens in the software path after the CRC has passed. So
-every decoder validates:
+**The two link fields are independent and must never be collapsed.** The 2027
+autonomy course deliberately includes areas with no C2 line-of-sight while
+onboard autonomy keeps working normally. Treating C2 loss as equivalent to
+Jetson loss would stop the rover exactly where it is supposed to keep going.
 
-1. **DLC** — a mismatch is the cheap signal that a peer is on a different
-   protocol version.
-2. **`mode`** — an undefined value is the same class of error (section 3.1).
+The controller **cannot observe C2** — it has no radio. `c2_link` is therefore
+*reported*, never derived from `jetson_link`, and reads `LINK_NOT_REPORTED`
+until the Jetson forwards real C2 state. That is an honest "nobody told us"
+rather than a misleading `LINK_OK`. Populating it is a separate work item,
+along with the `0x0080` fault bit reserved for it.
 
-Critically, a rejected frame **does not refresh the command watchdog**, or a
-mismatched node could keep the rover alive while sending commands it never
-understood. `PROTOCOL_ERROR` is raised so the resulting stop is diagnosable.
+**Controller health enum** (`controller_health`): `0=OK, 1=DEGRADED,
+2=FAULT, 3=NOT_REPORTED`. Currently always `NOT_REPORTED` — no motor-driver
+telemetry is wired up yet.
+
+**`indicator_state`** is the same enum as `indicator_request`, but it is what
+is actually shown. It echoes the request **unless any fault is active**, in
+which case it is forced to `INDICATOR_FAULT`: a faulted rover must not
+cheerfully display "autonomous" or "arrived". Comparing request against state
+tells an operator immediately whether the controller honoured the request.
+
+## 4. Integrity: two CRCs, covering different things
+
+| Concern | Provided by |
+|---|---|
+| Message boundaries | CAN hardware |
+| Wire corruption between the two CAN controllers | CAN hardware, 15-bit CRC |
+| Corruption recovery | CAN hardware, automatic retransmit in µs |
+| Priority / arbitration | CAN hardware, non-destructive |
+| **Corruption in the software path** | **our CRC-8** |
+| **Loss, duplication, reordering** | **our sequence number** |
+| **Wrong-message-on-wrong-id** | **our CRC-8, via id seeding** |
+| **Protocol version mismatch** | **our DLC, mode, flag and indicator validation** |
+
+**Why an application-layer CRC when CAN already has one.** CAN's CRC is
+computed by the transmitting controller and checked by the receiving
+controller. It protects the **wire** between those two chips:
+
+```
+Jetson software → driver/DMA → [ CAN CRC covers this ] → driver/DMA → MCU software
+   ^^^^^^^^^^^^^^^^^^^^^^^^^                              ^^^^^^^^^^^^^^^^^^^^^^^^
+   covered only by our CRC-8                              covered only by our CRC-8
+```
+
+A bug assembling the struct, DMA corruption, or a driver copying into the wrong
+buffer all produce a frame CAN considers perfectly valid and delivers with
+wrong contents. Our CRC is computed by our code over our struct and checked by
+our code on the far side, so it covers the whole path. This is the same
+reasoning behind AUTOSAR's E2E protection, which also layers a CRC on top of
+CAN's.
+
+**Do not remove it as redundant.** It is not redundant; it covers a different
+failure domain.
+
+### 4.1 The algorithm
+
+**CRC-8 / SAE-J1850** — what AUTOSAR E2E profiles 1 and 2 use.
+
+| Parameter | Value |
+|---|---|
+| Polynomial | `0x1D` |
+| Init | `0xFF` |
+| Reflect in / out | No / No |
+| Final XOR | `0xFF` |
+| **Check value** (`"123456789"`) | **`0x4B`** |
+
+Computed over **the CAN identifier (4 bytes, low byte first) followed by frame
+bytes 0–6**, excluding the CRC byte itself.
+
+**The id is in the seed on purpose** — AUTOSAR calls this a Data ID. Without
+it, a correctly-CRC'd payload delivered on the wrong id would validate: a
+telemetry frame mistakenly transmitted with `CONTROL`'s id would be accepted as
+a command. With it, that fails.
+
+**Porting note:** for a CRC-**8** the data byte is XORed into the whole
+register (`crc ^= byte`); for a CRC-16 it goes into the high byte
+(`crc ^= byte << 8`). Copying a CRC-16 loop and changing the width is the
+classic way to produce a plausible-looking wrong answer. The check value is
+pinned in `tests/cpp/test_protocol.cpp` and cross-checked against Python,
+because this repo has already shipped a CRC documented as one variant and
+implemented as another.
+
+### 4.2 What a rejected frame does
+
+A frame failing **any** validation — DLC, CRC, mode, reserved flags, indicator
+— is discarded and **does not refresh the command watchdog**. Otherwise a node
+on a mismatched protocol version could keep the rover alive while sending
+commands it never understood. The matching fault bit is raised so the
+resulting stop is diagnosable rather than silent.
 
 ## 5. Safety
 
 ### 5.1 The fail-safe rule
 
-Three triggers — **comm timeout**, **explicit `stop`**, and **any mode that
-does not positively permit motion** — all force a stop through a single
-function, `RoverController::effectiveStop()`. There is exactly one place in the
-codebase where "should this rover be moving?" is answered.
+Four triggers — **comm timeout**, **explicit `stop`**, **any mode that does not
+positively permit motion**, and **`autonomy_abort` while `AUTONOMOUS`** — all
+force a stop through a single function, `RoverController::effectiveStop()`.
+There is exactly one place in the codebase where "should this rover be moving?"
+is answered. `commandedOutputs()` then zeroes drive and steer *before* they
+reach the motor layer, so a future edit to `setMotorOutputs()` cannot
+accidentally act on a stale command.
 
-That third trigger is a **whitelist**, and that matters. The original version
-asked `mode == MODE_DISABLED` and stopped only then, so every undefined mode
-value read as "not disabled" and permitted full throttle — a safety predicate
-that failed *open*. It now asks `modePermitsMotion()`, so anything the
-firmware does not positively recognise as drivable means stop. Found by
-@k1ngsyph1ll1is in [issue #4](https://github.com/schradivarius/URC-task3/issues/4). `commandedOutputs()` then
-zeroes drive and steer *before* they reach the motor layer, so a future edit to
-`setMotorOutputs()` cannot accidentally act on a stale command.
-
-If no valid `CONTROL` frame arrives within `WATCHDOG_TIMEOUT_MS` (300 ms), the
-controller stops, raises `COMM_TIMEOUT` and keeps reporting `cmd_age_ms` so the
-staleness is visible frame by frame.
+The mode test is a **whitelist**. An earlier version asked `mode ==
+MODE_DISABLED` and stopped only then, so every undefined mode value read as
+"not disabled" and permitted full throttle — a safety predicate that failed
+*open*.
 
 The Jetson separately considers the *link* down after 500 ms with no telemetry.
 That is informational only; the rover's safety never depends on the Jetson
@@ -199,46 +312,45 @@ noticing anything.
 
 ### 5.2 Surviving a firmware fault
 
-A watchdog that covers only the *link* leaves the larger hole: if the firmware
-itself hangs, the outputs keep their last value and nothing is left running to
-notice.
-
 1. **Hardware watchdog** (`WDT_T4`, 1 s), fed once per loop. A hang resets the
    Teensy, driving outputs to a safe state.
 2. **Boot-fault reporting.** The reset is otherwise invisible to the Jetson
-   except as a telemetry gap — indistinguishable from a flaky bus. So the next
-   boot reads `SRC_SRSR`, and if the last reset was the watchdog it raises
+   except as a telemetry gap — indistinguishable from a flaky bus. The next
+   boot reads `SRC_SRSR` and, if the last reset was the watchdog, raises
    `FIRMWARE_FAULT` for that whole session and says so in the startup banner.
 3. **Bounded counters.** Encoder accumulators pass through `wrapI32()`. In
    Python an unwrapped counter raised inside `struct.pack`; in C++ signed
-   overflow is **undefined behaviour**, which is worse — no exception, just a
-   compiler free to do anything. CI runs the suite under UBSan to prove it.
+   overflow is **undefined behaviour**, which is worse. CI runs the suite under
+   UBSan to prove it.
 
-> **Honest difference from v0.2.** There is no try/except guard, because
-> Arduino builds run without exceptions. The hardware watchdog is the entire
-> story for an unexpected fault, which is why arming it is not optional.
+> **Honest difference from the CircuitPython original:** there is no try/except
+> guard, because Arduino builds run without exceptions. The hardware watchdog
+> is the entire story for an unexpected fault, which is why arming it is not
+> optional.
 
-### 5.3 `millis()` wraps — a hazard v0.2 did not have
+### 5.3 `millis()` wraps
 
-CircuitPython's `time.monotonic_ns()` is a 64-bit nanosecond counter that never
-wraps in practice. Arduino's `millis()` is `uint32_t` and **wraps every ~49.7
-days**.
+Arduino's `millis()` is `uint32_t` and wraps every ~49.7 days. Unsigned
+subtraction handles that correctly: `(now - then)` is computed modulo 2³².
+Comparing timestamps directly (`now >= then + timeout`) does **not** — it
+breaks the moment the counter wraps past the deadline. **Every time comparison
+in `rover_controller.cpp` is written as an elapsed-time subtraction.** Sequence
+numbers follow the same rule: `seqDelta()` subtracts, so `255 → 0` is a delta
+of 1 rather than a 255-frame loss.
 
-Unsigned subtraction handles this correctly on its own: `(now - then)` is
-computed modulo 2³², so it stays right across the wrap. What is *not* safe is
-comparing timestamps directly (`now >= then + timeout`), which breaks the
-moment the counter wraps past the deadline. **Every time comparison in
-`rover_controller.cpp` is written as an elapsed-time subtraction.**
-`test_controller.cpp` crosses the wrap boundary explicitly, and that test was
-verified to *fail* against a naive timestamp-comparison implementation — it is
-a real regression test, not decoration.
+`test_controller.cpp` crosses both wrap boundaries explicitly, and the
+`millis()` test was verified to *fail* against a naive timestamp-comparison
+implementation. It is a real regression test, not decoration.
 
 ## 6. Timing constants
 
 | Constant | Value | Notes |
 |---|---|---|
-| `WATCHDOG_TIMEOUT_MS` | 300 | 6× the control period, placeholder |
-| `TELEMETRY_PERIOD_MS` | 50 | 20 Hz |
+| `CONTROL` rate | 20 Hz | 1 frame per cycle |
+| `TELEMETRY` rate | 20 Hz | 4 frames per cycle |
+| `WATCHDOG_TIMEOUT_MS` | 300 | 6× the control period |
+| `TELEMETRY_PERIOD_MS` | 50 | |
+| `LINK_DEGRADED_HOLD_MS` | 1000 | How long a gap or CRC error keeps the link `DEGRADED` |
 | `HW_WATCHDOG_MS` | 1000 | Teensy reset if the loop stalls |
 | `LINK_TIMEOUT_S` (Jetson) | 0.5 | Informational only |
 
@@ -248,24 +360,24 @@ are derived from measured actuator response yet.
 ## 7. Demonstration and tests — no hardware required
 
 ```
-make test     # 28 C++ tests + 11 host tests
+make test     # 63 C++ tests + 38 host tests
 make demo     # the message-exchange demonstration
 ```
 
-`make demo` runs a live exchange against `tools/rover_sim`, then cuts the link
-for 800 ms (well past the 300 ms watchdog) and restores it. Captured output:
+`make demo` runs a live exchange against `tools/rover_sim`, then exercises a
+link cut, the stop flag, an autonomy abort, a corrupted frame and a sequence
+gap. Captured output:
 
 ```
 -- B: link cut -- Jetson stops sending (800ms > 300ms watchdog) --
-  t= 1.54s  cmd_age=309ms    enc_left=  +36550  current=  +0.00A  faults=COMM_TIMEOUT
-  t= 1.70s  cmd_age=459ms    enc_left=  +36550  current=  +0.00A  faults=COMM_TIMEOUT
-  t= 1.86s  cmd_age=659ms    enc_left=  +36550  current=  +0.00A  faults=COMM_TIMEOUT
+  t= 1.34s  seq= 27  enc=  +31600    +0.00A  24.00V  mode=MANUAL  jet=LOST  ind=FAULT  age=307ms  faults=COMM_TIMEOUT
+-- E: corrupted payload (app-layer CRC must reject it) --
+  t= 4.16s  seq= 84  enc=  +43600    +0.00A  24.00V  mode=AUTONOMOUS jet=LOST ind=FAULT age=523ms faults=COMM_TIMEOUT,CRC_ERROR
+-- F: sequence gap (frames 100 -> 140) --
+  t= 4.34s  seq= 87  enc=  +46440    +6.00A  23.90V  mode=MANUAL  jet=DEGRADED ind=FAULT age=86ms faults=SEQ_GAP
 ```
 
-`cmd_age` climbs, `COMM_TIMEOUT` appears, current falls to zero and the
-encoders freeze — then it all clears by itself once `CONTROL` resumes.
-
-Against real hardware, the same host script runs unchanged:
+Against real hardware the same host script runs unchanged:
 
 ```
 python3 host/jetson_test.py --channel can0 --bitrate 500000
@@ -276,31 +388,42 @@ python3 host/jetson_test.py --channel can0 --bitrate 500000
 The safety logic exists **once**, in `firmware/src/rover_controller.cpp`. The
 simulator the host tests run against is *that same source compiled natively* —
 not a Python mock. A hand-written mock would recreate the exact failure this
-project already had once: two copies of a safety rule, where the simulator
-passes while the firmware misbehaves and the tests check the wrong copy.
+project already had: two copies of a safety rule, where the simulator passes
+while the firmware misbehaves and the tests check the wrong copy.
 
 The **codec** genuinely must exist twice, since the Teensy runs C++ and the
 Jetson runs Python and neither can import the other. So it is pinned rather
-than trusted: `tests/host/test_golden_vectors.py` compiles the C++ encoder,
-runs it, and asserts Python produces identical bytes for identical inputs.
-This was verified to fail on an injected endianness change.
+than trusted. `tests/host/test_golden_vectors.py` compiles the C++ encoder,
+runs it, and asserts Python produces identical output for:
+
+- every encoded frame, byte for byte
+- the CRC check value and the id-seeded frame CRC
+- `seqDelta` across the wrap
+- `isKnownMode` and `modePermitsMotion` for **all 256** values
+- `isKnownIndicator` for **all 256** values
+
+Verified to fail on an injected endianness change.
 
 ## 9. Known placeholders
 
 - **`drive_cmd`/`steer_cmd` scaling** is unitless ±1000; expect real units once
   motors and steering geometry are chosen.
-- **Two encoders and one aggregate current** reading. A 6-wheel rover needs
+- **Two encoders and one aggregate current reading.** A 6-wheel rover needs
   six, and one current figure cannot identify *which* wheel is stalling. Both
   change the payload when they grow — likely into per-corner frames, which CAN
   makes cheap.
+- **`controller_health` is always `NOT_REPORTED`** — no motor-driver telemetry
+  is wired up. On a CAN bus that arrives as the drivers' own messages.
+- **`c2_link` is always `NOT_REPORTED`**, and `0x0080` is unclaimed. Separate
+  work item.
+- **`return_request` has no controller-side behaviour.** Carried and reported
+  only.
+- **`autonomy_abort` stopping an autonomous rover is a judgement call** — see
+  3.1.2. Flagged for review.
 - **Motor and sensor I/O is stubbed** behind `readSensors()` and
-  `setMotorOutputs()` in `rover_firmware.ino`. Nothing above those functions
-  should need to change when real hardware arrives.
-- **`SRC_SRSR` watchdog bit mask is unverified on hardware.** It fails *safe*
-  (an unrecognised reset cause reports nothing), but confirm it by deliberately
-  hanging the loop once on the bench.
-- **No sequence number.** CAN's retransmission covers corruption, but a counter
-  would let either side measure genuine loss.
+  `setMotorOutputs()` in `rover_firmware.ino`.
+- **`SRC_SRSR` watchdog bit mask is unverified on hardware.** It fails safe,
+  but confirm it by deliberately hanging the loop once on the bench.
 - **Not yet used:** CAN FD, the second and third CAN buses, and a dedicated
   high-priority e-stop frame in the reserved `0x000`–`0x0FF` block.
 
@@ -309,15 +432,15 @@ This was verified to fail on an injected endianness change.
 | Path | Runs on | Purpose |
 |---|---|---|
 | `firmware/rover_firmware.ino` | Teensy 4.1 | Hardware wiring only |
-| `firmware/src/rover_protocol.*` | **Both** | Message definitions and codec |
+| `firmware/src/rover_protocol.*` | **Both** | Message definitions, CRC, codec |
 | `firmware/src/rover_controller.*` | **Both** | Command/safety state machine |
 | `host/rover_protocol.py` | Jetson | Python codec (pinned to the C++ one) |
 | `host/can_link.py` | Jetson | Sim and python-can backends |
-| `host/jetson_test.py` | Jetson | Live host harness |
+| `host/jetson_test.py` | Jetson | Live harness, snapshot reassembly |
 | `host/demo.py` | Jetson | The demonstration in section 7 |
 | `tools/rover_sim.cpp` | dev machine | Simulator: real controller, fake plant |
 | `tools/golden_vectors.cpp` | dev machine | Emits vectors for cross-language pinning |
-| `tests/cpp/`, `tests/host/` | dev machine | 39 tests total |
+| `tests/cpp/`, `tests/host/` | dev machine | 101 tests total |
 
 ### 10.1 Flashing the Teensy 4.1
 

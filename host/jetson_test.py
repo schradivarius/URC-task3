@@ -13,9 +13,11 @@ jetson_test.py -- Jetson-side test harness for the rover CAN link.
     # Against the real Teensy on a real bus:
     python3 host/jetson_test.py --channel can0 --bitrate 500000
 
-Sends CONTROL at 20 Hz and reports the two telemetry frames as they arrive.
+Sends CONTROL at 20 Hz with an incrementing sequence number, and reassembles
+the four telemetry frames into coherent snapshots.
+
 Declares the LINK down if no telemetry has arrived within LINK_TIMEOUT_S --
-which is separate from, and no substitute for, the controller's own command-age
+separate from, and no substitute for, the controller's own command-age
 watchdog. The rover's safety never depends on the Jetson noticing anything.
 """
 
@@ -33,48 +35,90 @@ CONTROL_RATE_HZ = 20
 LINK_TIMEOUT_S = 0.5
 
 
-class JetsonLink:
-    """Sends CONTROL, accumulates the two telemetry frames into one view."""
+class TelemetryAssembler:
+    """Collects the four telemetry frames of one cycle into one snapshot.
 
+    All four frames of a cycle carry the SAME sequence number, which is how a
+    coherent snapshot is told from one torn across two cycles. A torn snapshot
+    is counted rather than silently published, because mixing a fresh encoder
+    reading with a stale fault word is exactly the kind of quiet wrongness
+    that makes a dashboard untrustworthy.
+    """
+
+    def __init__(self):
+        self.partial = {}          # can_id -> decoded dict, current seq only
+        self.partial_seq = None
+        self.snapshot = None       # last COMPLETE snapshot
+        self.snapshot_seq = None
+        self.complete_count = 0
+        self.torn_count = 0
+        self.frames_by_id = {cid: 0 for cid in rp.TELEM_IDS}
+        self.decode_errors = {}    # DecodeResult -> count
+
+    def feed(self, can_id, frame):
+        decoder = rp.DECODERS.get(can_id)
+        if decoder is None:
+            return False           # not telemetry; caller counts it
+        result, decoded = decoder(frame)
+        if result != rp.DECODE_OK:
+            self.decode_errors[result] = self.decode_errors.get(result, 0) + 1
+            return True
+        self.frames_by_id[can_id] += 1
+        seq = decoded["seq"]
+
+        if self.partial_seq is None or seq != self.partial_seq:
+            # A new cycle started. If the previous one never completed, the
+            # snapshot was torn -- frames were lost mid-cycle.
+            if self.partial_seq is not None and len(self.partial) < len(rp.TELEM_IDS):
+                self.torn_count += 1
+            self.partial = {}
+            self.partial_seq = seq
+
+        self.partial[can_id] = decoded
+        if len(self.partial) == len(rp.TELEM_IDS):
+            merged = {"seq": seq}
+            for part in self.partial.values():
+                merged.update({k: v for k, v in part.items() if k != "seq"})
+            self.snapshot = merged
+            self.snapshot_seq = seq
+            self.complete_count += 1
+        return True
+
+
+class JetsonLink:
     def __init__(self, link):
         self.link = link
-        self.motion = None
-        self.status = None
+        self.tele = TelemetryAssembler()
         self.frames_sent = 0
-        self.motion_count = 0
-        self.status_count = 0
         self.unknown_frames = 0
-        self.bad_dlc_frames = 0
         self.last_rx_time = None
+        self._tx_seq = 0
 
-    def send_control(self, drive_cmd, steer_cmd, mode, stop):
+    def send_control(self, drive_cmd, steer_cmd, mode, stop=False,
+                     autonomy_abort=False, return_request=False,
+                     indicator_request=rp.INDICATOR_OFF):
+        self._tx_seq = (self._tx_seq + 1) & 0xFF
         self.link.send(rp.CAN_ID_CONTROL,
-                       rp.encode_control(drive_cmd, steer_cmd, mode, stop))
+                       rp.encode_control(drive_cmd, steer_cmd, mode, stop,
+                                         seq=self._tx_seq,
+                                         autonomy_abort=autonomy_abort,
+                                         return_request=return_request,
+                                         indicator_request=indicator_request))
         self.frames_sent += 1
 
     def poll(self):
-        for can_id, payload in self.link.recv():
-            if can_id == rp.CAN_ID_TELEM_MOTION:
-                decoded = rp.decode_telemetry_motion(payload)
-                if decoded is None:
-                    self.bad_dlc_frames += 1
-                    continue
-                self.motion = decoded
-                self.motion_count += 1
-            elif can_id == rp.CAN_ID_TELEM_STATUS:
-                decoded = rp.decode_telemetry_status(payload)
-                if decoded is None:
-                    self.bad_dlc_frames += 1
-                    continue
-                self.status = decoded
-                self.status_count += 1
+        for can_id, frame in self.link.recv():
+            if self.tele.feed(can_id, frame):
+                self.last_rx_time = time.monotonic()
             else:
                 # A shared bus carries motor-controller and payload traffic.
                 # Counted rather than silently dropped, so an unexpected id is
                 # visible instead of invisible.
                 self.unknown_frames += 1
-                continue
-            self.last_rx_time = time.monotonic()
+
+    @property
+    def snapshot(self):
+        return self.tele.snapshot
 
     @property
     def link_up(self):
@@ -83,20 +127,27 @@ class JetsonLink:
         return (time.monotonic() - self.last_rx_time) < LINK_TIMEOUT_S
 
     def format_status(self, elapsed):
-        if self.status is None:
-            return "[t=%5.1fs] waiting for telemetry..." % elapsed
-        faults = ",".join(rp.fault_names(self.status["fault_status"])) or "none"
-        age = self.status["cmd_age_ms"]
+        s = self.snapshot
+        if s is None:
+            return "[t=%5.1fs] waiting for a complete telemetry snapshot..." % elapsed
+        faults = ",".join(rp.fault_names(s["fault_status"])) or "none"
+        age = s["cmd_age_ms"]
         age_txt = ("never" if age == rp.CMD_AGE_UNKNOWN
                    else ">%dms" % rp.CMD_AGE_MAX if age == rp.CMD_AGE_MAX
                    else "%dms" % age)
-        enc = self.motion or {"enc_left": 0, "enc_right": 0}
-        return ("[t=%5.1fs] link=%-4s sent=%4d rx=%4d enc=(%+9d,%+9d) "
-                "steer_fb=%+5d current=%+7.2fA cmd_age=%-8s faults=%-28s"
-                % (elapsed, "UP" if self.link_up else "DOWN", self.frames_sent,
-                   self.motion_count + self.status_count,
-                   enc["enc_left"], enc["enc_right"], self.status["steer_fb"],
-                   self.status["current_a"], age_txt, faults))
+        return ("[t=%5.1fs] link=%-4s seq=%3d sent=%4d snap=%4d torn=%2d "
+                "enc=(%+9d,%+9d) steer=%+5d %+7.2fA %6.2fV mode=%-10s "
+                "jet=%-12s c2=%-12s ctrl=%-12s ind=%-10s age=%-8s faults=%s"
+                % (elapsed, "UP" if self.link_up else "DOWN", s["seq"],
+                   self.frames_sent, self.tele.complete_count,
+                   self.tele.torn_count, s["enc_left"], s["enc_right"],
+                   s["steer_fb"], s["current_a"], s["voltage_v"],
+                   rp.MODE_NAMES.get(s["mode"], "?%d" % s["mode"]),
+                   rp.LINK_NAMES.get(s["jetson_link"], "?"),
+                   rp.LINK_NAMES.get(s["c2_link"], "?"),
+                   rp.CTRL_HEALTH_NAMES.get(s["controller_health"], "?"),
+                   rp.INDICATOR_NAMES.get(s["indicator_state"], "?"),
+                   age_txt, faults))
 
 
 def run(link, duration_s, verbose=True):
@@ -112,23 +163,27 @@ def run(link, duration_s, verbose=True):
             elapsed = now - t_start
             drive = 300 if int(elapsed) % 4 < 2 else -300
             steer = int(200 * ((elapsed % 2) - 1))
-            jl.send_control(drive, steer, rp.MODE_MANUAL, False)
+            jl.send_control(drive, steer, rp.MODE_MANUAL,
+                            indicator_request=rp.INDICATOR_TELEOP)
             t_next += period
             if now - t_next > period:
                 t_next = now + period          # do not burst after a stall
         jl.poll()
 
-        total = jl.motion_count + jl.status_count
-        if verbose and jl.status and total != last_printed:
-            last_printed = total
+        if verbose and jl.snapshot and jl.tele.complete_count != last_printed:
+            last_printed = jl.tele.complete_count
             print("\r" + jl.format_status(now - t_start), end="", flush=True)
         time.sleep(0.005)
 
     if verbose:
         print()
-        print("sent=%d motion=%d status=%d unknown_id=%d bad_dlc=%d"
-              % (jl.frames_sent, jl.motion_count, jl.status_count,
-                 jl.unknown_frames, jl.bad_dlc_frames))
+        print("sent=%d complete_snapshots=%d torn=%d unknown_id=%d"
+              % (jl.frames_sent, jl.tele.complete_count, jl.tele.torn_count,
+                 jl.unknown_frames))
+        print("frames per id: %s" % {hex(k): v for k, v in jl.tele.frames_by_id.items()})
+        if jl.tele.decode_errors:
+            print("WARNING decode errors: %s"
+                  % {rp.DECODE_NAMES[k]: v for k, v in jl.tele.decode_errors.items()})
     return jl
 
 
