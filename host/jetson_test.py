@@ -45,11 +45,15 @@ class JetsonLink:
         self.status_count = 0
         self.unknown_frames = 0
         self.bad_dlc_frames = 0
+        # PROTOCOL_ERROR self-clears on the next good CONTROL frame, so it can
+        # appear in a single status frame. Counted here, per frame, so a caller
+        # sampling self.status at its own pace cannot miss it.
+        self.protocol_error_reports = 0
         self.last_rx_time = None
 
-    def send_control(self, drive_cmd, steer_cmd, mode, stop):
+    def send_control(self, drive_cmd, steer_cmd, mode, stop, c2_lost):
         self.link.send(rp.CAN_ID_CONTROL,
-                       rp.encode_control(drive_cmd, steer_cmd, mode, stop))
+                       rp.encode_control(drive_cmd, steer_cmd, mode, stop, c2_lost))
         self.frames_sent += 1
 
     def poll(self):
@@ -68,6 +72,8 @@ class JetsonLink:
                     continue
                 self.status = decoded
                 self.status_count += 1
+                if decoded["fault_status"] & rp.FAULT_PROTOCOL_ERROR:
+                    self.protocol_error_reports += 1
             else:
                 # A shared bus carries motor-controller and payload traffic.
                 # Counted rather than silently dropped, so an unexpected id is
@@ -112,7 +118,7 @@ def run(link, duration_s, verbose=True):
             elapsed = now - t_start
             drive = 300 if int(elapsed) % 4 < 2 else -300
             steer = int(200 * ((elapsed % 2) - 1))
-            jl.send_control(drive, steer, rp.MODE_MANUAL, False)
+            jl.send_control(drive, steer, rp.MODE_MANUAL, stop=False, c2_lost=False)
             t_next += period
             if now - t_next > period:
                 t_next = now + period          # do not burst after a stall

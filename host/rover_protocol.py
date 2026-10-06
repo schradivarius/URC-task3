@@ -33,22 +33,24 @@ MODE_NAMES = {MODE_DISABLED: "DISABLED", MODE_MANUAL: "MANUAL",
               MODE_AUTONOMOUS: "AUTONOMOUS"}
 
 # --- fault bitmask ---
-FAULT_COMM_TIMEOUT   = 0x01
+FAULT_JETSON_HEARTBEAT_LOST   = 0x01
 FAULT_OVER_CURRENT   = 0x02
 FAULT_ESTOP_ACTIVE   = 0x04
 FAULT_ENCODER_FAULT  = 0x08
 FAULT_UNDERVOLTAGE   = 0x10
 FAULT_FIRMWARE_FAULT = 0x20
 FAULT_PROTOCOL_ERROR = 0x40
+FAULT_C2_LINK_LOST     = 0x80
 
 FAULT_NAMES = [
-    (FAULT_COMM_TIMEOUT, "COMM_TIMEOUT"),
+    (FAULT_JETSON_HEARTBEAT_LOST, "JETSON_HEARTBEAT_LOST"),
     (FAULT_OVER_CURRENT, "OVER_CURRENT"),
     (FAULT_ESTOP_ACTIVE, "ESTOP_ACTIVE"),
     (FAULT_ENCODER_FAULT, "ENCODER_FAULT"),
     (FAULT_UNDERVOLTAGE, "UNDERVOLTAGE"),
     (FAULT_FIRMWARE_FAULT, "FIRMWARE_FAULT"),
     (FAULT_PROTOCOL_ERROR, "PROTOCOL_ERROR"),
+    (FAULT_C2_LINK_LOST, "C2_LINK_LOST"),
 ]
 
 # --- command age sentinels ---
@@ -58,11 +60,11 @@ CMD_AGE_MAX     = 0xFFFE   # saturation ceiling for a real measurement
 # --- payload layouts. '<' = little-endian, no padding, matching the explicit
 # byte-order handling in rover_protocol.cpp. Every message is <= 8 bytes so the
 # protocol runs on Classic CAN as well as CAN FD.
-CONTROL_FMT      = "<hhBB"    # drive_cmd, steer_cmd, mode, stop
+CONTROL_FMT      = "<hhBBB"    # drive_cmd, steer_cmd, mode, stop, c2_lost
 TELEM_MOTION_FMT = "<ii"      # enc_left, enc_right
 TELEM_STATUS_FMT = "<hhBH"    # steer_fb, current_ca, fault_status, cmd_age_ms
 
-CONTROL_DLC      = struct.calcsize(CONTROL_FMT)       # 6
+CONTROL_DLC      = struct.calcsize(CONTROL_FMT)       # 7
 TELEM_MOTION_DLC = struct.calcsize(TELEM_MOTION_FMT)  # 8
 TELEM_STATUS_DLC = struct.calcsize(TELEM_STATUS_FMT)  # 7
 
@@ -114,8 +116,8 @@ def clamp_cmd_age_ms(age_ms):
 
 # --- encode ---------------------------------------------------------------
 
-def encode_control(drive_cmd, steer_cmd, mode, stop):
-    return struct.pack(CONTROL_FMT, drive_cmd, steer_cmd, mode, 1 if stop else 0)
+def encode_control(drive_cmd, steer_cmd, mode, stop, c2_lost):
+    return struct.pack(CONTROL_FMT, drive_cmd, steer_cmd, mode, 1 if stop else 0, 1 if c2_lost else 0)
 
 
 def encode_telemetry_motion(enc_left, enc_right):
@@ -134,13 +136,13 @@ def encode_telemetry_status(steer_fb, current_ca, fault_status, cmd_age_ms):
 def decode_control(payload):
     if len(payload) != CONTROL_DLC:
         return None
-    drive, steer, mode, stop = struct.unpack(CONTROL_FMT, payload)
+    drive, steer, mode, stop, c2_lost = struct.unpack(CONTROL_FMT, payload)
     # An undefined mode means the sender disagrees with us about the protocol,
     # exactly like a wrong DLC. Reject the frame rather than returning a value
     # the caller cannot reason about. Mirrors decodeControl() in C++.
     if not is_known_mode(mode):
         return None
-    return {"drive_cmd": drive, "steer_cmd": steer, "mode": mode, "stop": bool(stop)}
+    return {"drive_cmd": drive, "steer_cmd": steer, "mode": mode, "stop": bool(stop), "c2_lost": bool(c2_lost)}
 
 
 def decode_telemetry_motion(payload):

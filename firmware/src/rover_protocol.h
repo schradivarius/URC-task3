@@ -61,15 +61,16 @@ enum : uint8_t {
 };
 
 // Fault bitmask (TelemetryStatus::fault_status). Powers of two so faults
-// combine: COMM_TIMEOUT | OVER_CURRENT == 0x03 and both survive.
+// combine: JETSON_HEARTBEAT_LOST | OVER_CURRENT == 0x03 and both survive.
 enum : uint8_t {
-    FAULT_COMM_TIMEOUT   = 0x01,  // no valid CONTROL frame within the watchdog
+    FAULT_JETSON_HEARTBEAT_LOST   = 0x01,  // no valid CONTROL frame within the watchdog
     FAULT_OVER_CURRENT   = 0x02,
     FAULT_ESTOP_ACTIVE   = 0x04,
     FAULT_ENCODER_FAULT  = 0x08,
     FAULT_UNDERVOLTAGE   = 0x10,
     FAULT_FIRMWARE_FAULT = 0x20,  // this boot followed a watchdog reset
     FAULT_PROTOCOL_ERROR = 0x40,  // a frame on our id could not be interpreted
+    FAULT_C2_LINK_LOST     = 0x80,  // the C2 link is down
 };
 
 // Command age. Two distinct reserved values, because "you have never spoken
@@ -87,7 +88,7 @@ enum : uint16_t {
 // locked the rover into FD-capable transceivers on every node, including the
 // motor controllers, many of which are Classic-only.
 enum : uint8_t {
-    CONTROL_DLC      = 6,
+    CONTROL_DLC      = 7,
     TELEM_MOTION_DLC = 8,
     TELEM_STATUS_DLC = 7,
 };
@@ -127,6 +128,7 @@ struct ControlMsg {
     int16_t steer_cmd;  // -1000..1000, tenths of a percent of full range
     uint8_t mode;       // MODE_*
     uint8_t stop;       // 1 forces an immediate stop regardless of mode
+    uint8_t c2_lost;    // 1 indicates the C2 link is lost
 };
 
 // Telemetry is split across two frames so each fits Classic CAN's 8 bytes.

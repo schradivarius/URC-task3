@@ -12,10 +12,10 @@ using namespace rover;
 
 static void control_round_trips() {
     const ControlMsg cases[] = {
-        {     0,     0, MODE_DISABLED,   1},
-        {  1000, -1000, MODE_AUTONOMOUS, 0},
-        { -1000,  1000, MODE_MANUAL,     1},
-        {-32768, 32767, MODE_MANUAL,     0},   // int16 extremes
+        {     0,     0, MODE_DISABLED,   1, 0},
+        {  1000, -1000, MODE_AUTONOMOUS, 0, 0},
+        { -1000,  1000, MODE_MANUAL,     1, 0},
+        {-32768, 32767, MODE_MANUAL,     0, 0},   // int16 extremes
     };
     for (const ControlMsg& in : cases) {
         uint8_t buf[8] = {0};
@@ -27,6 +27,7 @@ static void control_round_trips() {
         CHECK_EQ(out.steer_cmd, in.steer_cmd);
         CHECK_EQ(out.mode, in.mode);
         CHECK_EQ(out.stop, in.stop);
+        CHECK_EQ(out.c2_lost, in.c2_lost);
     }
 }
 
@@ -84,7 +85,7 @@ static void wrong_dlc_is_rejected() {
     // on what the bytes MEAN. A DLC mismatch is the one cheap signal that a
     // peer is running a different protocol version, so it must be checked.
     uint8_t buf[8] = {0};
-    encodeControl({100, 0, MODE_MANUAL, 0}, buf);
+    encodeControl({100, 0, MODE_MANUAL, 0, 0}, buf);
     ControlMsg out;
     for (uint8_t bad_len = 0; bad_len <= 8; ++bad_len) {
         if (bad_len == CONTROL_DLC) continue;
@@ -140,7 +141,7 @@ static void undefined_mode_is_rejected_at_decode() {
     ControlMsg out;
     for (int m = 3; m <= 255; ++m) {
         uint8_t buf[8] = {0};
-        ControlMsg in = {1000, 500, static_cast<uint8_t>(m), 0};
+        ControlMsg in = {1000, 500, static_cast<uint8_t>(m), 0, 0};
         uint8_t dlc = encodeControl(in, buf);
         CHECK(!decodeControl(buf, dlc, out));
     }
@@ -148,7 +149,7 @@ static void undefined_mode_is_rejected_at_decode() {
     const uint8_t defined_modes[] = {MODE_DISABLED, MODE_MANUAL, MODE_AUTONOMOUS};
     for (uint8_t m : defined_modes) {
         uint8_t buf[8] = {0};
-        ControlMsg in = {100, 0, m, 0};
+        ControlMsg in = {100, 0, m, 0, 0};
         CHECK(decodeControl(buf, encodeControl(in, buf), out));
         CHECK_EQ(out.mode, m);
     }
@@ -192,9 +193,9 @@ static void cmd_age_sentinel_is_distinct_from_saturation() {
 
 static void fault_names_reports_combined_faults() {
     const char* names[8];
-    size_t n = faultNames(FAULT_COMM_TIMEOUT | FAULT_OVER_CURRENT, names, 8);
+    size_t n = faultNames(FAULT_JETSON_HEARTBEAT_LOST | FAULT_OVER_CURRENT, names, 8);
     CHECK_EQ(n, static_cast<size_t>(2));
-    CHECK_STREQ(names[0], "COMM_TIMEOUT");
+    CHECK_STREQ(names[0], "JETSON_HEARTBEAT_LOST");
     CHECK_STREQ(names[1], "OVER_CURRENT");
     CHECK_EQ(faultNames(0, names, 8), static_cast<size_t>(0));
 }

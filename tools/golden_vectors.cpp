@@ -25,18 +25,18 @@ int main() {
     uint8_t buf[8];
     char args[128];
 
-    struct { int16_t d, s; uint8_t m, st; } controls[] = {
-        {0, 0, MODE_DISABLED, 1},
-        {500, -200, MODE_MANUAL, 0},
-        {1000, -1000, MODE_AUTONOMOUS, 0},
-        {-1000, 1000, MODE_MANUAL, 1},
-        {-32768, 32767, MODE_MANUAL, 0},
-        {-21846, 170, MODE_MANUAL, 0},     // 0xAAAA: the old UART false-sync case
+    struct { int16_t d, s; uint8_t m, st, c2; } controls[] = {
+        {0, 0, MODE_DISABLED, 1, 0},
+        {500, -200, MODE_MANUAL, 0, 0},
+        {1000, -1000, MODE_AUTONOMOUS, 0, 0},
+        {-1000, 1000, MODE_MANUAL, 1, 0},
+        {-32768, 32767, MODE_MANUAL, 0, 0},
+        {-21846, 170, MODE_MANUAL, 0, 0},     // 0xAAAA: the old UART false-sync case
     };
     for (auto& c : controls) {
-        ControlMsg m = {c.d, c.s, c.m, c.st};
+        ControlMsg m = {c.d, c.s, c.m, c.st, c.c2};
         uint8_t n = encodeControl(m, buf);
-        std::snprintf(args, sizeof(args), "%d,%d,%u,%u", c.d, c.s, c.m, c.st);
+        std::snprintf(args, sizeof(args), "%d,%d,%u,%u,%u", c.d, c.s, c.m, c.st, c.c2);
         emit("CONTROL", args, buf, n);
     }
 
@@ -64,7 +64,7 @@ int main() {
     struct { int16_t fb, ca; uint8_t f; uint16_t age; } statuses[] = {
         {0, 0, 0, 0},
         {-1000, -2500, FAULT_OVER_CURRENT, 42},
-        {1000, 32767, (uint8_t)(FAULT_COMM_TIMEOUT | FAULT_FIRMWARE_FAULT), CMD_AGE_MAX},
+        {1000, 32767, (uint8_t)(FAULT_JETSON_HEARTBEAT_LOST | FAULT_FIRMWARE_FAULT), CMD_AGE_MAX},
         {-1, -10000, 0xFF, CMD_AGE_UNKNOWN},
     };
     for (auto& s : statuses) {

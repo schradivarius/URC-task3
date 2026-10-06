@@ -22,6 +22,7 @@ RoverController::RoverController(MillisFn now_ms,
     last_control_.steer_cmd = 0;
     last_control_.mode      = MODE_DISABLED;
     last_control_.stop      = 1;
+    last_control_.c2_lost   = 1;
 }
 
 bool RoverController::ingestFrame(uint32_t can_id, const uint8_t* buf, uint8_t len) {
@@ -66,7 +67,8 @@ bool RoverController::watchdogTripped() const {
 bool RoverController::effectiveStop() const {
     return watchdogTripped()
         || last_control_.stop != 0
-        || !modePermitsMotion(last_control_.mode);
+        || !modePermitsMotion(last_control_.mode)
+        || (last_control_.c2_lost != 0 && last_control_.mode == MODE_MANUAL);
 }
 
 void RoverController::commandedOutputs(int16_t& drive, int16_t& steer) const {
@@ -98,10 +100,11 @@ TelemetryStatus RoverController::buildStatus(int16_t steer_fb, int16_t current_c
     st.steer_fb     = steer_fb;
     st.current_ca   = current_ca;
     st.fault_status = static_cast<uint8_t>(sensor_faults | extra_faults);
-    if (watchdogTripped()) st.fault_status |= FAULT_COMM_TIMEOUT;
+    if (watchdogTripped()) st.fault_status |= FAULT_JETSON_HEARTBEAT_LOST;
     // Without this the rover would halt on a bad mode while telemetry read
     // "no faults, link healthy" -- a silent stop is its own hazard.
     if (protocol_error_)   st.fault_status |= FAULT_PROTOCOL_ERROR;
+    if (last_control_.c2_lost != 0) st.fault_status |= FAULT_C2_LINK_LOST;
     st.cmd_age_ms   = cmdAgeMs();
     return st;
 }

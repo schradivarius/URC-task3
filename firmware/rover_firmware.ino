@@ -18,7 +18,7 @@
 // WHY THIS FILE IS SHORT
 //   All the protocol and safety logic lives in src/rover_protocol.* and
 //   src/rover_controller.*, which are pure C++ with no Arduino dependency and
-//   are unit-tested natively (`make -C tests/cpp test`, 28 tests). This file
+//   are unit-tested natively (`make -C tests/cpp test`, 38 tests). This file
 //   is only the hardware wiring around them. If you are reviewing safety
 //   behaviour, read rover_controller.h, not this.
 //
@@ -30,7 +30,7 @@
 //      except as a gap in telemetry, so the NEXT boot inspects the reset
 //      status register and raises FAULT_FIRMWARE_FAULT for the whole session.
 //   3. Command watchdog, in RoverController: no valid CONTROL frame within
-//      300 ms forces a stop and raises FAULT_COMM_TIMEOUT.
+//      300 ms forces a stop and raises FAULT_JETSON_HEARTBEAT_LOST.
 //   4. Commands are zeroed by commandedOutputs() before they ever reach the
 //      motor layer, so a future edit to setMotorOutputs() cannot accidentally
 //      act on a stale command.
