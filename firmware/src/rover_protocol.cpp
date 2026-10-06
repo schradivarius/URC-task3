@@ -59,6 +59,10 @@ bool isKnownMode(uint8_t mode) {
     return mode == MODE_DISABLED || mode == MODE_MANUAL || mode == MODE_AUTONOMOUS;
 }
 
+bool isKnownIndicator(uint8_t indicator_request){
+    return indicator_request == INDICATOR_OFF || indicator_request == INDICATOR_BLUE || indicator_request == INDICATOR_RED || indicator_request == INDICATOR_GREEN_FLASH;
+}       
+
 bool modePermitsMotion(uint8_t mode) {
     // Whitelist. Every value not named here -- including DISABLED and every
     // undefined value -- means stop. See the note in rover_protocol.h.
@@ -106,7 +110,8 @@ uint8_t encodeControl(const ControlMsg& msg, uint8_t* buf) {
     putI16(buf + 2, msg.steer_cmd);
     buf[4] = msg.mode;
     buf[5] = msg.stop ? 1 : 0;
-    buf[6] = msg.c2_lost ? 1 : 0;
+    buf[6] = msg.indicator_request;
+    buf[7] = msg.c2_lost ? 1 : 0;
     return CONTROL_DLC;
 }
 
@@ -122,11 +127,13 @@ bool decodeControl(const uint8_t* buf, uint8_t len, ControlMsg& out) {
     // is. A newer peer sending a mode we do not implement must stop this
     // rover, not be tolerated.
     if (!isKnownMode(buf[4])) return false;
+    if (!isKnownIndicator(buf[6])) return false;
     out.drive_cmd = getI16(buf + 0);
     out.steer_cmd = getI16(buf + 2);
     out.mode      = buf[4];
     out.stop      = buf[5] ? 1 : 0;
-    out.c2_lost   = buf[6] ? 1 : 0;
+    out.indicator_request = buf[6];
+    out.c2_lost   = buf[7] ? 1 : 0;
     return true;
 }
 
@@ -152,6 +159,7 @@ uint8_t encodeTelemetryStatus(const TelemetryStatus& msg, uint8_t* buf) {
     putI16(buf + 2, msg.current_ca);
     buf[4] = msg.fault_status;
     putU16(buf + 5, msg.cmd_age_ms);
+    buf[7] = msg.indicator_state;
     return TELEM_STATUS_DLC;
 }
 
@@ -161,6 +169,7 @@ bool decodeTelemetryStatus(const uint8_t* buf, uint8_t len, TelemetryStatus& out
     out.current_ca   = getI16(buf + 2);
     out.fault_status = buf[4];
     out.cmd_age_ms   = getU16(buf + 5);
+    out.indicator_state = buf[7];
     return true;
 }
 

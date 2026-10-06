@@ -12,10 +12,10 @@ using namespace rover;
 
 static void control_round_trips() {
     const ControlMsg cases[] = {
-        {     0,     0, MODE_DISABLED,   1, 0},
-        {  1000, -1000, MODE_AUTONOMOUS, 0, 0},
-        { -1000,  1000, MODE_MANUAL,     1, 0},
-        {-32768, 32767, MODE_MANUAL,     0, 0},   // int16 extremes
+        {     0,     0, MODE_DISABLED,   1, INDICATOR_OFF, 0},
+        {  1000, -1000, MODE_AUTONOMOUS, 0, INDICATOR_OFF, 0},
+        { -1000,  1000, MODE_MANUAL,     1, INDICATOR_OFF, 0},
+        {-32768, 32767, MODE_MANUAL,     0, INDICATOR_OFF, 0},   // int16 extremes
     };
     for (const ControlMsg& in : cases) {
         uint8_t buf[8] = {0};
@@ -44,7 +44,7 @@ static void telemetry_motion_round_trips() {
 
 static void telemetry_status_round_trips() {
     const TelemetryStatus in = {-1000, -2500,
-                                static_cast<uint8_t>(FAULT_OVER_CURRENT), 42};
+                                static_cast<uint8_t>(FAULT_OVER_CURRENT), 42, INDICATOR_OFF};
     uint8_t buf[8] = {0};
     uint8_t dlc = encodeTelemetryStatus(in, buf);
     CHECK_EQ(dlc, TELEM_STATUS_DLC);
@@ -60,7 +60,7 @@ static void current_is_signed_for_regenerative_braking() {
     // Unsigned current would wrap a braking motor's negative reading into a
     // huge positive value -- the worst kind of bad telemetry, because it looks
     // entirely plausible on a dashboard.
-    const TelemetryStatus in = {0, -10000, 0, 0};   // -100.00 A
+    const TelemetryStatus in = {0, -10000, 0, 0, INDICATOR_OFF};   // -100.00 A
     uint8_t buf[8] = {0};
     encodeTelemetryStatus(in, buf);
     TelemetryStatus out;
@@ -85,7 +85,7 @@ static void wrong_dlc_is_rejected() {
     // on what the bytes MEAN. A DLC mismatch is the one cheap signal that a
     // peer is running a different protocol version, so it must be checked.
     uint8_t buf[8] = {0};
-    encodeControl({100, 0, MODE_MANUAL, 0, 0}, buf);
+    encodeControl({100, 0, MODE_MANUAL, 0, INDICATOR_OFF, 0}, buf);
     ControlMsg out;
     for (uint8_t bad_len = 0; bad_len <= 8; ++bad_len) {
         if (bad_len == CONTROL_DLC) continue;
@@ -141,7 +141,7 @@ static void undefined_mode_is_rejected_at_decode() {
     ControlMsg out;
     for (int m = 3; m <= 255; ++m) {
         uint8_t buf[8] = {0};
-        ControlMsg in = {1000, 500, static_cast<uint8_t>(m), 0, 0};
+        ControlMsg in = {1000, 500, static_cast<uint8_t>(m), 0, INDICATOR_OFF, 0};
         uint8_t dlc = encodeControl(in, buf);
         CHECK(!decodeControl(buf, dlc, out));
     }
@@ -149,7 +149,7 @@ static void undefined_mode_is_rejected_at_decode() {
     const uint8_t defined_modes[] = {MODE_DISABLED, MODE_MANUAL, MODE_AUTONOMOUS};
     for (uint8_t m : defined_modes) {
         uint8_t buf[8] = {0};
-        ControlMsg in = {100, 0, m, 0, 0};
+        ControlMsg in = {100, 0, m, 0, INDICATOR_OFF, 0};
         CHECK(decodeControl(buf, encodeControl(in, buf), out));
         CHECK_EQ(out.mode, m);
     }

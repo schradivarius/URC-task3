@@ -77,7 +77,7 @@ def corrupt_one_frame(jl, t0, seconds=1.0, bad_at=0.5):
             if not sent_bad and now - start >= bad_at:
                 # Raw bytes: encode_control only ever builds valid frames.
                 jl.link.send(rp.CAN_ID_CONTROL,
-                             struct.pack(rp.CONTROL_FMT, -1000, 0, 7, 0, 0))
+                             struct.pack(rp.CONTROL_FMT, -1000, 0, 7, 0, rp.INDICATOR_OFF, 0))
                 sent_bad = True
                 print("  >>> sent ONE frame: mode=7 (undefined), drive=-1000 (full reverse)")
             else:

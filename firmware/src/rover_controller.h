@@ -75,6 +75,8 @@ public:
     // if the Jetson itself goes quiet. See PROTOCOL.md section 3.1.
     bool effectiveStop() const;
 
+    uint8_t indicatorState() const;
+
     // The drive/steer actually permitted right now: zeroed under stop, so a
     // caller cannot accidentally act on a stale command.
     void commandedOutputs(int16_t& drive, int16_t& steer) const;

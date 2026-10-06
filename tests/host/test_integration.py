@@ -122,7 +122,7 @@ class TestUndefinedMode(RoverFixture):
         """Bypass encode_control's own validation to put an arbitrary byte on
         the bus, the way a mismatched or faulty sender would."""
         import struct
-        payload = struct.pack(rp.CONTROL_FMT, drive, steer, mode, 0, 0)
+        payload = struct.pack(rp.CONTROL_FMT, drive, steer, mode, 0, rp.INDICATOR_OFF, 0)
         end = time.monotonic() + seconds
         while time.monotonic() < end:
             self.link.send(rp.CAN_ID_CONTROL, payload)
@@ -200,7 +200,7 @@ class TestBusHygiene(RoverFixture):
         self.drive(0.4)
         end = time.monotonic() + 0.7
         while time.monotonic() < end:
-            self.link.send(rp.CAN_ID_CONTROL, b"\x00\x00\x00\x00")   # 4 bytes, not 7
+            self.link.send(rp.CAN_ID_CONTROL, b"\x00\x00\x00\x00")   # 4 bytes, not 8
             self.jl.poll()
             time.sleep(0.02)
         self.jl.poll()

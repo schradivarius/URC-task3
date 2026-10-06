@@ -22,6 +22,7 @@ RoverController::RoverController(MillisFn now_ms,
     last_control_.steer_cmd = 0;
     last_control_.mode      = MODE_DISABLED;
     last_control_.stop      = 1;
+    last_control_.indicator_request = INDICATOR_OFF;
     last_control_.c2_lost   = 1;
 }
 
@@ -71,6 +72,15 @@ bool RoverController::effectiveStop() const {
         || (last_control_.c2_lost != 0 && last_control_.mode == MODE_MANUAL);
 }
 
+uint8_t RoverController::indicatorState() const {
+    if (watchdogTripped()) return INDICATOR_OFF;
+    if ( last_control_.mode == MODE_DISABLED )   return INDICATOR_OFF;
+    if ( last_control_.mode == MODE_MANUAL)     return INDICATOR_BLUE;
+    // only AUTONOMOUS can reach here: your mode work guarantees no other value exists
+    if ( last_control_.indicator_request == INDICATOR_GREEN_FLASH ) return INDICATOR_GREEN_FLASH;
+    return INDICATOR_RED;
+}
+
 void RoverController::commandedOutputs(int16_t& drive, int16_t& steer) const {
     if (effectiveStop()) { drive = 0; steer = 0; return; }
     drive = last_control_.drive_cmd;
@@ -106,6 +116,7 @@ TelemetryStatus RoverController::buildStatus(int16_t steer_fb, int16_t current_c
     if (protocol_error_)   st.fault_status |= FAULT_PROTOCOL_ERROR;
     if (last_control_.c2_lost != 0) st.fault_status |= FAULT_C2_LINK_LOST;
     st.cmd_age_ms   = cmdAgeMs();
+    st.indicator_state = indicatorState();
     return st;
 }
 

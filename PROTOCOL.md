@@ -56,9 +56,9 @@ The id table is therefore a priority ordering, not just a set of names.
 | ID | Message | Direction | DLC |
 |---|---|---|---|
 | `0x000`–`0x0FF` | *reserved* — headroom for a dedicated e-stop frame | — | — |
-| **`0x100`** | `CONTROL` | Jetson → controller | 7 |
+| **`0x100`** | `CONTROL` | Jetson → controller | 8 |
 | **`0x200`** | `TELEM_MOTION` | controller → Jetson | 8 |
-| **`0x201`** | `TELEM_STATUS` | controller → Jetson | 7 |
+| **`0x201`** | `TELEM_STATUS` | controller → Jetson | 8 |
 
 Commands outrank telemetry because a late command can hurt the rover and late
 telemetry only annoys an operator. The block below `0x100` is deliberately
@@ -72,7 +72,7 @@ node of the bus, including motor controllers that are commonly Classic-only.
 Separate ids also mean a lost motion frame does not cost the Jetson its fault
 status.
 
-### 3.1 `CONTROL` — `0x100`, DLC 7
+### 3.1 `CONTROL` — `0x100`, DLC 8
 
 | Field | Type | Range | Meaning |
 |---|---|---|---|
@@ -80,6 +80,7 @@ status.
 | `steer_cmd` | int16 | -1000..1000 | Desired steering, tenths of a percent of full range |
 | `mode` | uint8 | 0/1/2 | `0=DISABLED, 1=MANUAL, 2=AUTONOMOUS` |
 | `stop` | uint8 | 0/1 | Forces an immediate stop regardless of `mode` |
+| `indicator_request` | uint8 | 0/1/2/3 | Status light the Jetson **asks** for — see §3.4. The MCU decides what is actually shown. |
 | `c2_lost` | uint8 | 0/1 | `1` = the Jetson has lost the base-station (C2) link. Decided by the Jetson, see below. |
 
 `stop` is a separate field rather than a third mode value so an e-stop can be
@@ -95,7 +96,9 @@ heartbeat within `C2_timeout_s`, default 1.0 s, means lost) and reports the resu
 healthy Jetson is expected on the autonomy course, where line of sight to the
 base station drops while onboard autonomy keeps running.
 
-- It is appended as the last byte, so no existing field moved.
+- It is appended as the last byte (byte 7, after `indicator_request`), so no
+  existing field moved. That fills `CONTROL` to 8 bytes, the Classic CAN
+  maximum: any further field needs CAN FD or a second frame.
 - The controller boots with `c2_lost = 1` and holds it until the first valid
   frame says otherwise, matching every other boot default (assume the worst).
 - `encode_control()` has **no default** for it. A caller that forgot the flag
@@ -138,7 +141,7 @@ needs the update before a host may send it.
 | `enc_left` | int32 | Left cumulative encoder ticks. **Wraps** — treat as relative. |
 | `enc_right` | int32 | Right cumulative encoder ticks |
 
-### 3.3 `TELEM_STATUS` — `0x201`, DLC 7
+### 3.3 `TELEM_STATUS` — `0x201`, DLC 8
 
 | Field | Type | Range | Meaning |
 |---|---|---|---|
@@ -146,6 +149,7 @@ needs the update before a host may send it.
 | `current_ca` | **int16** | ±327.67 A | Current in **centiamps** (1 cA = 10 mA). **Signed.** |
 | `fault_status` | uint8 | bitmask | See below |
 | `cmd_age_ms` | uint16 | see below | ms since the last valid `CONTROL` frame |
+| `indicator_state` | uint8 | 0/1/2/3 | Status light the MCU is **actually showing** — see §3.4 |
 
 `current_ca` is signed because a braking motor genuinely produces negative
 current; unsigned would wrap that to a large positive value, which is the worst
@@ -161,7 +165,7 @@ kind of bad telemetry because it looks plausible on a dashboard.
 | `0x08` | `ENCODER_FAULT` | Encoder reading invalid or stalled |
 | `0x10` | `UNDERVOLTAGE` | Supply voltage low (placeholder) |
 | `0x20` | `FIRMWARE_FAULT` | This boot followed a watchdog reset (section 5.2) |
-| `0x40` | `PROTOCOL_ERROR` | The last frame on our id was uninterpretable: wrong DLC, or an undefined `mode`. Self-clears when a valid frame arrives. |
+| `0x40` | `PROTOCOL_ERROR` | The last frame on our id was uninterpretable: wrong DLC, an undefined `mode`, or an undefined `indicator_request`. Self-clears when a valid frame arrives. |
 | `0x80` | `C2_LINK_LOST` | The last `CONTROL` frame reported the base station ↔ Jetson link lost (`c2_lost = 1`). Raised in every mode; stops the rover only in `MANUAL` (section 3.1). |
 
 **Command age**, with two distinct reserved values:
@@ -174,6 +178,53 @@ kind of bad telemetry because it looks plausible on a dashboard.
 "You have never spoken to me" is a wiring or bus-configuration problem.
 "You stopped speaking 65 seconds ago" is something that died mid-mission.
 Different diagnoses, so they must be different values.
+
+### 3.4 Status indicator
+
+URC requires a status light: **red = autonomous operation, blue =
+teleoperation, flashing green = successful arrival**. The Jetson commands it and
+the MCU represents it, through two fields:
+
+| Field | Frame | Byte | Meaning |
+|---|---|---|---|
+| `indicator_request` | `CONTROL` | 6 | What the Jetson **asks** the light to show |
+| `indicator_state` | `TELEM_STATUS` | 7 | What the MCU is **actually** showing |
+
+Both use the same values:
+
+| Value | Name | Meaning |
+|---|---|---|
+| `0` | `INDICATOR_OFF` | Not operating: `DISABLED`, or the watchdog has tripped. Also the neutral "no special request" |
+| `1` | `INDICATOR_BLUE` | Teleoperation (`MANUAL`) |
+| `2` | `INDICATOR_RED` | Autonomous operation |
+| `3` | `INDICATOR_GREEN_FLASH` | Autonomous arrival at a target |
+
+**The two fields can differ, on purpose.** The light exists so a judge can see
+what the rover is *actually* doing, and the MCU knows its own mode. So the
+Jetson's request is honoured only when it agrees with that mode; otherwise the
+MCU overrides it. The rules, checked top to bottom, first match wins
+(`RoverController::indicatorState()`):
+
+| # | Condition | Shown | Request |
+|---|---|---|---|
+| 1 | Watchdog tripped | `OFF` | ignored |
+| 2 | Mode `DISABLED` | `OFF` | ignored |
+| 3 | Mode `MANUAL` | `BLUE` | ignored — a human-driven rover never shows red or green |
+| 4 | Mode `AUTONOMOUS` | `GREEN_FLASH` if green was requested, else `RED` | only green matters |
+
+`stop` does not change the light: a paused autonomous rover is still in
+autonomous operation, so it stays red.
+
+**Unknown values, two directions, two different answers.**
+
+- **`indicator_request` (Jetson → MCU): the whole frame is rejected**, exactly
+  like an undefined `mode` (§3.1). The sender disagrees with us about the
+  protocol, so the frame does not refresh the command watchdog and
+  `PROTOCOL_ERROR` is raised. Rejecting a command is safe: the rover stops.
+- **`indicator_state` (MCU → Jetson): the frame is kept; only that field
+  decodes as `None`.** The same status frame carries `fault_status` and
+  `cmd_age_ms`. Dropping it over a cosmetic field would blind the operator to
+  real faults, so rejecting telemetry is *not* the safe choice.
 
 ## 4. What CAN provides, so we do not
 
@@ -284,7 +335,7 @@ are derived from measured actuator response yet.
 ## 7. Demonstration and tests — no hardware required
 
 ```
-make test     # 38 C++ tests + 18 host tests
+make test     # 45 C++ tests + 18 host tests
 make demo     # the message-exchange demonstration
 ```
 
@@ -354,7 +405,7 @@ This was verified to fail on an injected endianness change.
 | `host/demo.py` | Jetson | The demonstration in section 7 |
 | `tools/rover_sim.cpp` | dev machine | Simulator: real controller, fake plant |
 | `tools/golden_vectors.cpp` | dev machine | Emits vectors for cross-language pinning |
-| `tests/cpp/`, `tests/host/` | dev machine | 56 tests total |
+| `tests/cpp/`, `tests/host/` | dev machine | 63 tests total |
 
 ### 10.1 Flashing the Teensy 4.1
 
