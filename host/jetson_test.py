@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import can_link  # noqa: E402
 import rover_protocol as rp  # noqa: E402
+import c2_link  # noqa: E402
 
 CONTROL_RATE_HZ = 20
 LINK_TIMEOUT_S = 0.5
@@ -105,7 +106,8 @@ class JetsonLink:
                    self.status["current_a"], age_txt, faults))
 
 
-def run(link, duration_s, verbose=True):
+def run(link, c2, duration_s, verbose=True):
+    monitor = c2_link.C2Monitor()   
     jl = JetsonLink(link)
     period = 1.0 / CONTROL_RATE_HZ
     t_start = time.monotonic()
@@ -118,7 +120,8 @@ def run(link, duration_s, verbose=True):
             elapsed = now - t_start
             drive = 300 if int(elapsed) % 4 < 2 else -300
             steer = int(200 * ((elapsed % 2) - 1))
-            jl.send_control(drive, steer, rp.MODE_MANUAL, stop=False, c2_lost=False)
+            c2_loss = c2_link.poll_c2_lost(c2, monitor, now)
+            jl.send_control(drive, steer, rp.MODE_MANUAL, stop=False, c2_lost=c2_loss)
             t_next += period
             if now - t_next > period:
                 t_next = now + period          # do not burst after a stall
@@ -138,10 +141,18 @@ def run(link, duration_s, verbose=True):
     return jl
 
 
-def open_link(args):
+def open_can_link(args):
     if args.mock:
         return can_link.SimLink()
     return can_link.SocketCanLink(channel=args.channel, bitrate=args.bitrate)
+
+def open_c2_link(args):
+    link = c2_link.SimC2Link()
+    if args.mock:
+        link.connect()
+        return link
+    link.connect()
+    return link # Change into real Link once real link stuff is made
 
 
 def main():
@@ -159,11 +170,13 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
-    link = open_link(args)
+    link = open_can_link(args)
+    c2 = open_c2_link(args)
     try:
-        run(link, args.duration)
+        run(link, c2, args.duration)
     finally:
         link.close()
+        c2.disconnect()
 
 
 if __name__ == "__main__":
