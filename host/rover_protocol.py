@@ -58,7 +58,13 @@ FAULT_NAMES = [
     (FAULT_C2_LINK_LOST, "C2_LINK_LOST"),
 ]
 
-C2_UNKNOWN = "C2_UNKNOWN" 
+# --- C2 (base-station) link state, as derived from the fault word ---
+# Three states, not two, because "we know C2 is down" and "we cannot tell"
+# call for different operator decisions.
+C2_STATE_OK      = "OK"        # the Jetson is talking and says C2 is up
+C2_STATE_LOST    = "LOST"      # the Jetson is talking and says C2 is down
+C2_STATE_UNKNOWN = "UNKNOWN"   # the Jetson is silent, so C2 is unknowable
+C2_UNKNOWN = "C2_UNKNOWN"      # how UNKNOWN is spelled in a fault listing
 
 # --- command age sentinels ---
 CMD_AGE_UNKNOWN = 0xFFFF   # no valid CONTROL frame has EVER arrived
@@ -93,13 +99,36 @@ MOTION_MODES = (MODE_MANUAL, MODE_AUTONOMOUS)
 def fault_names(bitmask):
     return [name for bit, name in FAULT_NAMES if bitmask & bit]
 
+def c2_state(fault_status):
+    """What the fault word says about the base-station link: OK, LOST, UNKNOWN.
+
+    UNKNOWN outranks LOST, and that ordering is the point. The MCU only ever
+    learns about C2 from the Jetson, in CONTROL.c2_lost. If the Jetson has
+    gone silent, the C2 bit the MCU is still reporting is whatever the last
+    CONTROL frame happened to say -- possibly minutes stale -- so it is
+    evidence for neither "up" nor "down". Reporting that stale bit as fact
+    would tell the operator the link is fine when nobody actually knows.
+
+    Lives here rather than in describe_faults() so that code which has to
+    ACT on the link state gets a value to branch on, instead of having to
+    substring-match a display string.
+    """
+    if fault_status & FAULT_JETSON_HEARTBEAT_LOST:
+        return C2_STATE_UNKNOWN
+    if fault_status & FAULT_C2_LINK_LOST:
+        return C2_STATE_LOST
+    return C2_STATE_OK
+
+
 def describe_faults(fault_status):
-    heartbeat_lost = fault_status & FAULT_JETSON_HEARTBEAT_LOST
-    if heartbeat_lost:
-        fault_status &= ~FAULT_C2_LINK_LOST 
+    """Human-readable fault list, with the stale C2 bit replaced by C2_UNKNOWN."""
+    state = c2_state(fault_status)
+    if state == C2_STATE_UNKNOWN:
+        # Suppress the stale bit rather than print a claim nobody can back up.
+        fault_status &= ~FAULT_C2_LINK_LOST
     names = fault_names(fault_status)
-    if heartbeat_lost:
-        names.append("C2_UNKNOWN")
+    if state == C2_STATE_UNKNOWN:
+        names.append(C2_UNKNOWN)
     return ",".join(names) or "none"
 
 
@@ -185,4 +214,5 @@ def decode_telemetry_status(payload):
         state = None          # "the MCU sent something I don't understand"
     return {"steer_fb": steer_fb, "current_ca": current_ca,
             "current_a": current_ca / 100.0,
-            "fault_status": faults, "cmd_age_ms": age, "indicator_state": state}
+            "fault_status": faults, "cmd_age_ms": age, "indicator_state": state,
+            "c2_state": c2_state(faults)}

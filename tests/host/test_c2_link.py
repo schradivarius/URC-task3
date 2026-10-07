@@ -28,6 +28,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(REPO, "host"))
 
 import c2_link  # noqa: E402
+import rover_protocol as rp  # noqa: E402
 
 
 class TestSimC2Link(unittest.TestCase):
@@ -124,6 +125,56 @@ class TestPollC2Lost(unittest.TestCase):
         link = c2_link.SimC2Link()          # never connected
         mon = c2_link.C2Monitor()
         self.assertTrue(c2_link.poll_c2_lost(link, mon, 0.0))
+
+
+class TestC2StateDerivation(unittest.TestCase):
+    """rp.c2_state() turns the fault word into OK / LOST / UNKNOWN.
+
+    The tricky case is both bits set at once. The MCU only learns about C2
+    from CONTROL.c2_lost, so if the Jetson has gone silent the C2 bit it is
+    still reporting is stale -- it is whatever the last CONTROL frame said,
+    which may be minutes old. UNKNOWN therefore has to outrank LOST, and
+    equally it has to outrank OK: reporting a stale "C2 is fine" is the
+    dangerous direction, because it tells the operator the link is healthy
+    when in truth nobody can see it at all.
+    """
+
+    def test_no_faults_is_ok(self):
+        self.assertEqual(rp.c2_state(0), rp.C2_STATE_OK)
+
+    def test_the_c2_bit_alone_is_lost(self):
+        self.assertEqual(rp.c2_state(rp.FAULT_C2_LINK_LOST), rp.C2_STATE_LOST)
+
+    def test_a_silent_jetson_is_unknown_not_ok(self):
+        # The C2 bit is CLEAR here, i.e. the last frame said "C2 fine".
+        # Trusting that while the Jetson is silent is the unsafe reading.
+        self.assertEqual(rp.c2_state(rp.FAULT_JETSON_HEARTBEAT_LOST),
+                         rp.C2_STATE_UNKNOWN)
+
+    def test_a_silent_jetson_outranks_a_stale_lost_bit(self):
+        both = rp.FAULT_JETSON_HEARTBEAT_LOST | rp.FAULT_C2_LINK_LOST
+        self.assertEqual(rp.c2_state(both), rp.C2_STATE_UNKNOWN)
+
+    def test_unrelated_faults_do_not_affect_the_c2_state(self):
+        self.assertEqual(rp.c2_state(rp.FAULT_OVER_CURRENT), rp.C2_STATE_OK)
+        self.assertEqual(
+            rp.c2_state(rp.FAULT_OVER_CURRENT | rp.FAULT_C2_LINK_LOST),
+            rp.C2_STATE_LOST)
+
+    def test_describe_faults_hides_the_stale_bit_and_says_unknown(self):
+        both = rp.FAULT_JETSON_HEARTBEAT_LOST | rp.FAULT_C2_LINK_LOST
+        text = rp.describe_faults(both)
+        self.assertIn("C2_UNKNOWN", text)
+        self.assertNotIn("C2_LINK_LOST", text,
+                         "printed a stale C2 claim the Jetson cannot back up")
+
+    def test_describe_faults_keeps_unrelated_faults_visible(self):
+        # Suppressing the C2 bit must not swallow anything else in the word.
+        text = rp.describe_faults(rp.FAULT_JETSON_HEARTBEAT_LOST
+                                  | rp.FAULT_C2_LINK_LOST
+                                  | rp.FAULT_OVER_CURRENT)
+        self.assertIn("OVER_CURRENT", text)
+        self.assertIn("C2_UNKNOWN", text)
 
 
 if __name__ == "__main__":
