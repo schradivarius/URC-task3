@@ -27,7 +27,7 @@ than mocking them, so there is no dependency to manage.
 git clone https://github.com/schradivarius/URC-task3.git
 cd URC-task3
 
-make test     # 38 C++ tests + 18 host tests
+make test     # 45 C++ tests + 20 host tests
 make demo     # no-hardware message-exchange demonstration
 ```
 
@@ -55,8 +55,8 @@ tools/
   rover_sim.cpp                simulator: REAL controller, fake plant
   golden_vectors.cpp           emits vectors for cross-language pinning
 
-tests/cpp/                   38 tests — firmware core
-tests/host/                  18 tests — golden vectors + integration
+tests/cpp/                   45 tests — firmware core
+tests/host/                  20 tests — golden vectors + integration
 ```
 
 The two files under `firmware/src/` have **no Arduino dependency and no

@@ -37,12 +37,12 @@ class RoverFixture(unittest.TestCase):
         self.link.close()
 
     def drive(self, seconds, drive=400, steer=100,
-              mode=rp.MODE_MANUAL, stop=False, send=True):
+              mode=rp.MODE_MANUAL, stop=False, send=True, c2_lost=False):
         """Send CONTROL at 20 Hz (or stay silent) for `seconds`, polling."""
         end = time.monotonic() + seconds
         while time.monotonic() < end:
             if send:
-                self.jl.send_control(drive, steer, mode, stop)
+                self.jl.send_control(drive, steer, mode, stop, c2_lost)
             self.jl.poll()
             time.sleep(0.02)
         self.jl.poll()
@@ -50,6 +50,24 @@ class RoverFixture(unittest.TestCase):
     def faults(self):
         self.assertIsNotNone(self.jl.status, "no telemetry received at all")
         return rp.fault_names(self.jl.status["fault_status"])
+
+
+class TestDescribeFaults(unittest.TestCase):
+    """Once JETSON_HEARTBEAT_LOST is set, the C2 bit is stale: show C2_UNKNOWN."""
+
+    def test_c2_state_follows_the_heartbeat(self):
+        cases = [
+            (0x00, "none"),
+            (rp.FAULT_C2_LINK_LOST, "C2_LINK_LOST"),
+            (rp.FAULT_JETSON_HEARTBEAT_LOST, "JETSON_HEARTBEAT_LOST,C2_UNKNOWN"),
+            (rp.FAULT_JETSON_HEARTBEAT_LOST | rp.FAULT_C2_LINK_LOST,
+             "JETSON_HEARTBEAT_LOST,C2_UNKNOWN"),
+            (rp.FAULT_JETSON_HEARTBEAT_LOST | rp.FAULT_OVER_CURRENT | rp.FAULT_C2_LINK_LOST,
+             "JETSON_HEARTBEAT_LOST,OVER_CURRENT,C2_UNKNOWN"),
+        ]
+        for fault_status, expected in cases:
+            with self.subTest(fault_status=hex(fault_status)):
+                self.assertEqual(rp.describe_faults(fault_status), expected)
 
 
 class TestEndToEnd(RoverFixture):
@@ -63,13 +81,13 @@ class TestEndToEnd(RoverFixture):
         self.assertEqual(self.jl.bad_dlc_frames, 0)
         self.assertEqual(self.jl.unknown_frames, 0)
 
-    def test_link_cut_trips_comm_timeout_then_recovers(self):
+    def test_link_cut_trips_jetson_heartbeat_lost_then_recovers(self):
         self.drive(0.6)
         self.assertEqual(self.faults(), [])
         moving = self.jl.motion["enc_left"]
 
         self.drive(0.7, send=False)          # silence, well past the 300ms watchdog
-        self.assertIn("COMM_TIMEOUT", self.faults())
+        self.assertIn("JETSON_HEARTBEAT_LOST", self.faults())
         self.assertEqual(self.jl.status["current_ca"], 0,
                          "still drawing current after the watchdog tripped")
         frozen = self.jl.motion["enc_left"]
@@ -82,6 +100,21 @@ class TestEndToEnd(RoverFixture):
         self.drive(0.5)                      # commands resume
         self.assertEqual(self.faults(), [], "fault did not clear on its own")
         self.assertGreater(self.jl.motion["enc_left"], frozen)
+
+    def test_c2_reads_unknown_once_the_jetson_goes_silent(self):
+        # The C2 bit is copied from the last CONTROL frame, so after the
+        # watchdog trips it is stale. A stale LOST must not be shown as LOST.
+        self.drive(0.6, c2_lost=True)
+        self.assertEqual(rp.describe_faults(self.jl.status["fault_status"]),
+                         "C2_LINK_LOST")
+
+        self.drive(0.7, send=False)
+        self.assertIn("C2_LINK_LOST", self.faults(), "precondition: bit is still set")
+        self.assertEqual(rp.describe_faults(self.jl.status["fault_status"]),
+                         "JETSON_HEARTBEAT_LOST,C2_UNKNOWN")
+
+        self.drive(0.5)                      # Jetson back, C2 fine
+        self.assertEqual(rp.describe_faults(self.jl.status["fault_status"]), "none")
 
     def test_stop_flag_is_honoured_end_to_end(self):
         self.drive(0.5)
@@ -122,7 +155,7 @@ class TestUndefinedMode(RoverFixture):
         """Bypass encode_control's own validation to put an arbitrary byte on
         the bus, the way a mismatched or faulty sender would."""
         import struct
-        payload = struct.pack("<hhBB", drive, steer, mode, 0)
+        payload = struct.pack(rp.CONTROL_FMT, drive, steer, mode, 0, rp.INDICATOR_OFF, 0)
         end = time.monotonic() + seconds
         while time.monotonic() < end:
             self.link.send(rp.CAN_ID_CONTROL, payload)
@@ -152,7 +185,7 @@ class TestUndefinedMode(RoverFixture):
     def test_undefined_mode_does_not_keep_the_watchdog_alive(self):
         self.drive(0.4)                            # healthy first
         self.send_raw_mode(7, 0.7)                 # then nothing but bad modes
-        self.assertIn("COMM_TIMEOUT", self.faults(),
+        self.assertIn("JETSON_HEARTBEAT_LOST", self.faults(),
                       "undefined modes refreshed the command watchdog")
 
     def test_recovery_after_the_sender_is_fixed(self):
@@ -170,7 +203,7 @@ class TestUndefinedMode(RoverFixture):
         self.drive(0.5, drive=1000, mode=rp.MODE_DISABLED)
         self.assertEqual(self.jl.motion["enc_left"], 0)
         self.assertNotIn("PROTOCOL_ERROR", self.faults())
-        self.assertNotIn("COMM_TIMEOUT", self.faults())
+        self.assertNotIn("JETSON_HEARTBEAT_LOST", self.faults())
 
 
 class TestBusHygiene(RoverFixture):
@@ -185,12 +218,12 @@ class TestBusHygiene(RoverFixture):
         # including for watchdog purposes.
         end = time.monotonic() + 0.7
         while time.monotonic() < end:
-            self.link.send(0x321, rp.encode_control(1000, 0, rp.MODE_MANUAL, False))
+            self.link.send(0x321, rp.encode_control(1000, 0, rp.MODE_MANUAL, False, c2_lost=False))
             self.jl.poll()
             time.sleep(0.02)
         self.jl.poll()
 
-        self.assertIn("COMM_TIMEOUT", self.faults(),
+        self.assertIn("JETSON_HEARTBEAT_LOST", self.faults(),
                       "a foreign id kept the command watchdog alive")
         self.assertEqual(self.jl.status["current_ca"], 0)
         self.assertGreater(self.jl.motion["enc_left"], moving - 1)
@@ -200,11 +233,11 @@ class TestBusHygiene(RoverFixture):
         self.drive(0.4)
         end = time.monotonic() + 0.7
         while time.monotonic() < end:
-            self.link.send(rp.CAN_ID_CONTROL, b"\x00\x00\x00\x00")   # 4 bytes, not 6
+            self.link.send(rp.CAN_ID_CONTROL, b"\x00\x00\x00\x00")   # 4 bytes, not 8
             self.jl.poll()
             time.sleep(0.02)
         self.jl.poll()
-        self.assertIn("COMM_TIMEOUT", self.faults(),
+        self.assertIn("JETSON_HEARTBEAT_LOST", self.faults(),
                       "a wrong-DLC frame refreshed the command watchdog")
 
 

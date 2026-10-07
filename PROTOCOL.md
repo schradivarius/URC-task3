@@ -56,7 +56,7 @@ The id table is therefore a priority ordering, not just a set of names.
 | ID | Message | Direction | DLC |
 |---|---|---|---|
 | `0x000`–`0x0FF` | *reserved* — headroom for a dedicated e-stop frame | — | — |
-| **`0x100`** | `CONTROL` | Jetson → controller | 7 |
+| **`0x100`** | `CONTROL` | Jetson → controller | 8 |
 | **`0x200`** | `TELEM_MOTION` | controller → Jetson | 8 |
 | **`0x201`** | `TELEM_STATUS` | controller → Jetson | 8 |
 
@@ -72,7 +72,7 @@ node of the bus, including motor controllers that are commonly Classic-only.
 Separate ids also mean a lost motion frame does not cost the Jetson its fault
 status.
 
-### 3.1 `CONTROL` — `0x100`, DLC 7
+### 3.1 `CONTROL` — `0x100`, DLC 8
 
 | Field | Type | Range | Meaning |
 |---|---|---|---|
@@ -81,10 +81,48 @@ status.
 | `mode` | uint8 | 0/1/2 | `0=DISABLED, 1=MANUAL, 2=AUTONOMOUS` |
 | `stop` | uint8 | 0/1 | Forces an immediate stop regardless of `mode` |
 | `indicator_request` | uint8 | 0/1/2/3 | Status light the Jetson **asks** for — see §3.4. The MCU decides what is actually shown. |
+| `c2_lost` | uint8 | 0/1 | `1` = the Jetson has lost the base-station (C2) link. Decided by the Jetson, see below. |
 
 `stop` is a separate field rather than a third mode value so an e-stop can be
 asserted **and released** without a mode round trip. It takes effect on the
 control cycle it arrives — there is no coast frame.
+
+**`c2_lost` is the Jetson's report on a link the controller cannot see.** The
+controller can detect a silent Jetson itself (the command watchdog), but it has
+no view of the radio link between the base station and the Jetson. So the
+Jetson watches that link (`C2Monitor` in `host/c2_link.py`: no base-station
+heartbeat within `C2_timeout_s`, default 1.0 s, means lost) and reports the result in every
+`CONTROL` frame. The two conditions are deliberately separate: C2 loss with a
+healthy Jetson is expected on the autonomy course, where line of sight to the
+base station drops while onboard autonomy keeps running.
+
+- It is appended as the last byte (byte 7, after `indicator_request`), so no
+  existing field moved. That fills `CONTROL` to 8 bytes, the Classic CAN
+  maximum: any further field needs CAN FD or a second frame.
+- The controller boots with `c2_lost = 1` and holds it until the first valid
+  frame says otherwise, matching every other boot default (assume the worst).
+- `encode_control()` has **no default** for it. A caller that forgot the flag
+  would otherwise silently report the link as healthy.
+- **What the controller does with it** depends on who is driving:
+
+  | Mode | `c2_lost = 1` → | Why |
+  |---|---|---|
+  | `MANUAL` | **stop** | The operator's commands can no longer arrive |
+  | `AUTONOMOUS` | **keep driving** | The Jetson is driving, and is provably alive or the command watchdog would already have stopped the rover |
+  | `DISABLED` | stopped anyway | — |
+
+  `FAULT_C2_LINK_LOST` is raised in **every** mode. During an autonomous run
+  it is the only sign that the rover is out of contact. This per-mode policy is
+  an initial choice and may be revised.
+- **Once `JETSON_HEARTBEAT_LOST` is set, the C2 bit is unknown, not OK or
+  LOST.** The controller only knows `c2_lost` from the last `CONTROL` frame, so
+  when the Jetson goes silent that value goes stale: a clear bit ten seconds
+  later does not mean C2 is fine, and a set bit does not mean it is still down.
+  This needs no wire change, because the heartbeat bit travels in the same
+  frame. Receivers apply the rule: `describe_faults()` in `host/rover_protocol.py`
+  hides the stale `C2_LINK_LOST` and reports `C2_UNKNOWN` instead. Keep the two
+  apart: LOST (decided by the Jetson's `C2Monitor`) is what lets autonomy keep
+  driving; UNKNOWN only stops a dashboard from trusting a stale value.
 
 **`mode` is validated, and an undefined value stops the rover.** The field is a
 uint8, so it carries 256 possible values where three are defined. Two separate
@@ -130,13 +168,14 @@ kind of bad telemetry because it looks plausible on a dashboard.
 
 | Bit | Name | Meaning |
 |---|---|---|
-| `0x01` | `COMM_TIMEOUT` | No valid `CONTROL` frame within the watchdog |
+| `0x01` | `JETSON_HEARTBEAT_LOST` | No valid `CONTROL` frame within the watchdog |
 | `0x02` | `OVER_CURRENT` | Current exceeded a threshold |
 | `0x04` | `ESTOP_ACTIVE` | Hardware or software e-stop engaged |
 | `0x08` | `ENCODER_FAULT` | Encoder reading invalid or stalled |
 | `0x10` | `UNDERVOLTAGE` | Supply voltage low (placeholder) |
 | `0x20` | `FIRMWARE_FAULT` | This boot followed a watchdog reset (section 5.2) |
 | `0x40` | `PROTOCOL_ERROR` | The last frame on our id was uninterpretable: wrong DLC, an undefined `mode`, or an undefined `indicator_request`. Self-clears when a valid frame arrives. |
+| `0x80` | `C2_LINK_LOST` | The last `CONTROL` frame reported the base station ↔ Jetson link lost (`c2_lost = 1`). Raised in every mode; stops the rover only in `MANUAL` (section 3.1). **Stale while `JETSON_HEARTBEAT_LOST` is set**: receivers must then treat the C2 state as unknown. |
 
 **Command age**, with two distinct reserved values:
 
@@ -224,10 +263,16 @@ understood. `PROTOCOL_ERROR` is raised so the resulting stop is diagnosable.
 
 ### 5.1 The fail-safe rule
 
-Three triggers — **comm timeout**, **explicit `stop`**, and **any mode that
-does not positively permit motion** — all force a stop through a single
-function, `RoverController::effectiveStop()`. There is exactly one place in the
-codebase where "should this rover be moving?" is answered.
+Four triggers — **jetson heartbeat lost**, **explicit `stop`**, **any mode that
+does not positively permit motion**, and **C2 lost while in `MANUAL`** — all
+force a stop through a single function, `RoverController::effectiveStop()`.
+There is exactly one place in the codebase where "should this rover be moving?"
+is answered.
+
+The first and fourth are deliberately different. Jetson heartbeat loss stops
+the rover in every mode, because nothing is driving it. C2 loss stops it only in
+`MANUAL`, because an autonomous Jetson can keep driving without the base station
+(section 3.1).
 
 That third trigger is a **whitelist**, and that matters. The original version
 asked `mode == MODE_DISABLED` and stopped only then, so every undefined mode
@@ -239,7 +284,7 @@ zeroes drive and steer *before* they reach the motor layer, so a future edit to
 `setMotorOutputs()` cannot accidentally act on a stale command.
 
 If no valid `CONTROL` frame arrives within `WATCHDOG_TIMEOUT_MS` (300 ms), the
-controller stops, raises `COMM_TIMEOUT` and keeps reporting `cmd_age_ms` so the
+controller stops, raises `JETSON_HEARTBEAT_LOST` and keeps reporting `cmd_age_ms` so the
 staleness is visible frame by frame.
 
 The Jetson separately considers the *link* down after 500 ms with no telemetry.
@@ -286,10 +331,12 @@ a real regression test, not decoration.
 
 | Constant | Value | Notes |
 |---|---|---|
-| `WATCHDOG_TIMEOUT_MS` | 300 | 6× the control period, placeholder |
+| `WATCHDOG_TIMEOUT_MS` | 300 | Initial design value for testing (6× the 50 ms control period, tolerates 5 lost frames). Tunable. |
 | `TELEMETRY_PERIOD_MS` | 50 | 20 Hz |
 | `HW_WATCHDOG_MS` | 1000 | Teensy reset if the loop stalls |
 | `LINK_TIMEOUT_S` (Jetson) | 0.5 | Informational only |
+| `CONTROL_RATE_HZ` (Jetson) | 20 (50 ms) | Required heartbeat rate. Jetson must send CONTROL continuously, even when idle (drive=0). |
+| `C2_timeout_s` (Jetson, `C2Monitor`) | 1.0 | Initial design value for testing. No base-station heartbeat for this long sets `c2_lost`. Longer than the 300 ms CAN watchdog because a radio drops packets far more often than a CAN bus. Tunable, and the base-station heartbeat rate is not yet defined. |
 
 All placeholders, chosen to sit comfortably above one period plus margin. None
 are derived from measured actuator response yet.
@@ -297,7 +344,7 @@ are derived from measured actuator response yet.
 ## 7. Demonstration and tests — no hardware required
 
 ```
-make test     # 28 C++ tests + 11 host tests
+make test     # 45 C++ tests + 20 host tests
 make demo     # the message-exchange demonstration
 ```
 
@@ -306,13 +353,14 @@ for 800 ms (well past the 300 ms watchdog) and restores it. Captured output:
 
 ```
 -- B: link cut -- Jetson stops sending (800ms > 300ms watchdog) --
-  t= 1.54s  cmd_age=309ms    enc_left=  +36550  current=  +0.00A  faults=COMM_TIMEOUT
-  t= 1.70s  cmd_age=459ms    enc_left=  +36550  current=  +0.00A  faults=COMM_TIMEOUT
-  t= 1.86s  cmd_age=659ms    enc_left=  +36550  current=  +0.00A  faults=COMM_TIMEOUT
+  t= 1.54s  cmd_age=309ms    enc_left=  +36550  current=  +0.00A  faults=JETSON_HEARTBEAT_LOST,C2_UNKNOWN
+  t= 1.70s  cmd_age=459ms    enc_left=  +36550  current=  +0.00A  faults=JETSON_HEARTBEAT_LOST,C2_UNKNOWN
+  t= 1.86s  cmd_age=659ms    enc_left=  +36550  current=  +0.00A  faults=JETSON_HEARTBEAT_LOST,C2_UNKNOWN
 ```
 
-`cmd_age` climbs, `COMM_TIMEOUT` appears, current falls to zero and the
-encoders freeze — then it all clears by itself once `CONTROL` resumes.
+`cmd_age` climbs, `JETSON_HEARTBEAT_LOST` appears (with `C2_UNKNOWN`, since the
+C2 bit is now stale), current falls to zero and the encoders freeze — then it
+all clears by itself once `CONTROL` resumes.
 
 Against real hardware, the same host script runs unchanged:
 
@@ -362,11 +410,12 @@ This was verified to fail on an injected endianness change.
 | `firmware/src/rover_controller.*` | **Both** | Command/safety state machine |
 | `host/rover_protocol.py` | Jetson | Python codec (pinned to the C++ one) |
 | `host/can_link.py` | Jetson | Sim and python-can backends |
+| `host/c2_link.py` | Jetson | C2 (base-station) link loss detection, and a fake link for testing |
 | `host/jetson_test.py` | Jetson | Live host harness |
 | `host/demo.py` | Jetson | The demonstration in section 7 |
 | `tools/rover_sim.cpp` | dev machine | Simulator: real controller, fake plant |
 | `tools/golden_vectors.cpp` | dev machine | Emits vectors for cross-language pinning |
-| `tests/cpp/`, `tests/host/` | dev machine | 39 tests total |
+| `tests/cpp/`, `tests/host/` | dev machine | 63 tests total |
 
 ### 10.1 Flashing the Teensy 4.1
 

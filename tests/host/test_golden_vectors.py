@@ -49,7 +49,7 @@ class TestGoldenVectors(unittest.TestCase):
     def python_encode(self, name, args):
         n = [int(a) for a in args.split(",")]
         if name == "CONTROL":
-            return p.encode_control(n[0], n[1], n[2], n[3])
+            return p.encode_control(n[0], n[1], n[2], n[3], n[4])
         if name == "TELEM_MOTION":
             return p.encode_telemetry_motion(n[0], n[1])
         if name == "TELEM_STATUS":
@@ -80,11 +80,11 @@ class TestGoldenVectors(unittest.TestCase):
 
     def test_undefined_mode_is_rejected_by_the_python_decoder(self):
         for mode in (3, 4, 42, 128, 255):
-            payload = p.encode_control(1000, 500, mode, False)
+            payload = p.encode_control(1000, 500, mode, False, c2_lost=False)
             self.assertIsNone(p.decode_control(payload),
                               "Python accepted undefined mode=%d" % mode)
         for mode in (p.MODE_DISABLED, p.MODE_MANUAL, p.MODE_AUTONOMOUS):
-            payload = p.encode_control(100, 0, mode, False)
+            payload = p.encode_control(100, 0, mode, False, c2_lost=False)
             self.assertIsNotNone(p.decode_control(payload))
 
     def test_python_encoder_matches_cpp_byte_for_byte(self):

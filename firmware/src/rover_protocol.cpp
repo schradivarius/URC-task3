@@ -87,14 +87,14 @@ uint16_t clampCmdAgeMs(int64_t age_ms) {
 
 size_t faultNames(uint8_t bitmask, const char** out, size_t cap) {
     static const uint8_t bits[] = {
-        FAULT_COMM_TIMEOUT, FAULT_OVER_CURRENT, FAULT_ESTOP_ACTIVE,
+        FAULT_JETSON_HEARTBEAT_LOST, FAULT_OVER_CURRENT, FAULT_ESTOP_ACTIVE,
         FAULT_ENCODER_FAULT, FAULT_UNDERVOLTAGE, FAULT_FIRMWARE_FAULT,
-        FAULT_PROTOCOL_ERROR,
+        FAULT_PROTOCOL_ERROR, FAULT_C2_LINK_LOST,
     };
     static const char* names[] = {
-        "COMM_TIMEOUT", "OVER_CURRENT", "ESTOP_ACTIVE",
+        "JETSON_HEARTBEAT_LOST", "OVER_CURRENT", "ESTOP_ACTIVE",
         "ENCODER_FAULT", "UNDERVOLTAGE", "FIRMWARE_FAULT",
-        "PROTOCOL_ERROR",
+        "PROTOCOL_ERROR", "C2_LINK_LOST",
     };
     size_t n = 0;
     for (size_t i = 0; i < sizeof(bits) && n < cap; ++i) {
@@ -111,6 +111,7 @@ uint8_t encodeControl(const ControlMsg& msg, uint8_t* buf) {
     buf[4] = msg.mode;
     buf[5] = msg.stop ? 1 : 0;
     buf[6] = msg.indicator_request;
+    buf[7] = msg.c2_lost ? 1 : 0;
     return CONTROL_DLC;
 }
 
@@ -132,6 +133,7 @@ bool decodeControl(const uint8_t* buf, uint8_t len, ControlMsg& out) {
     out.mode      = buf[4];
     out.stop      = buf[5] ? 1 : 0;
     out.indicator_request = buf[6];
+    out.c2_lost   = buf[7] ? 1 : 0;
     return true;
 }
 

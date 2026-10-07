@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import can_link  # noqa: E402
 import rover_protocol as rp  # noqa: E402
+import c2_link  # noqa: E402
 
 CONTROL_RATE_HZ = 20
 LINK_TIMEOUT_S = 0.5
@@ -45,11 +46,15 @@ class JetsonLink:
         self.status_count = 0
         self.unknown_frames = 0
         self.bad_dlc_frames = 0
+        # PROTOCOL_ERROR self-clears on the next good CONTROL frame, so it can
+        # appear in a single status frame. Counted here, per frame, so a caller
+        # sampling self.status at its own pace cannot miss it.
+        self.protocol_error_reports = 0
         self.last_rx_time = None
 
-    def send_control(self, drive_cmd, steer_cmd, mode, stop):
+    def send_control(self, drive_cmd, steer_cmd, mode, stop, c2_lost):
         self.link.send(rp.CAN_ID_CONTROL,
-                       rp.encode_control(drive_cmd, steer_cmd, mode, stop))
+                       rp.encode_control(drive_cmd, steer_cmd, mode, stop, c2_lost))
         self.frames_sent += 1
 
     def poll(self):
@@ -68,6 +73,8 @@ class JetsonLink:
                     continue
                 self.status = decoded
                 self.status_count += 1
+                if decoded["fault_status"] & rp.FAULT_PROTOCOL_ERROR:
+                    self.protocol_error_reports += 1
             else:
                 # A shared bus carries motor-controller and payload traffic.
                 # Counted rather than silently dropped, so an unexpected id is
@@ -85,7 +92,7 @@ class JetsonLink:
     def format_status(self, elapsed):
         if self.status is None:
             return "[t=%5.1fs] waiting for telemetry..." % elapsed
-        faults = ",".join(rp.fault_names(self.status["fault_status"])) or "none"
+        faults = rp.describe_faults(self.status["fault_status"])
         age = self.status["cmd_age_ms"]
         age_txt = ("never" if age == rp.CMD_AGE_UNKNOWN
                    else ">%dms" % rp.CMD_AGE_MAX if age == rp.CMD_AGE_MAX
@@ -99,7 +106,8 @@ class JetsonLink:
                    self.status["current_a"], age_txt, faults))
 
 
-def run(link, duration_s, verbose=True):
+def run(link, c2, duration_s, verbose=True):
+    monitor = c2_link.C2Monitor()   
     jl = JetsonLink(link)
     period = 1.0 / CONTROL_RATE_HZ
     t_start = time.monotonic()
@@ -112,7 +120,8 @@ def run(link, duration_s, verbose=True):
             elapsed = now - t_start
             drive = 300 if int(elapsed) % 4 < 2 else -300
             steer = int(200 * ((elapsed % 2) - 1))
-            jl.send_control(drive, steer, rp.MODE_MANUAL, False)
+            c2_loss = c2_link.poll_c2_lost(c2, monitor, now)
+            jl.send_control(drive, steer, rp.MODE_MANUAL, stop=False, c2_lost=c2_loss)
             t_next += period
             if now - t_next > period:
                 t_next = now + period          # do not burst after a stall
@@ -132,10 +141,18 @@ def run(link, duration_s, verbose=True):
     return jl
 
 
-def open_link(args):
+def open_can_link(args):
     if args.mock:
         return can_link.SimLink()
     return can_link.SocketCanLink(channel=args.channel, bitrate=args.bitrate)
+
+def open_c2_link(args):
+    link = c2_link.SimC2Link()
+    if args.mock:
+        link.connect()
+        return link
+    link.connect()
+    return link # Change into real Link once real link stuff is made
 
 
 def main():
@@ -153,11 +170,13 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
-    link = open_link(args)
+    link = open_can_link(args)
+    c2 = open_c2_link(args)
     try:
-        run(link, args.duration)
+        run(link, c2, args.duration)
     finally:
         link.close()
+        c2.disconnect()
 
 
 if __name__ == "__main__":

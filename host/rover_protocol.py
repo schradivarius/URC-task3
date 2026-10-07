@@ -38,23 +38,27 @@ INDICATOR_RED = 2
 INDICATOR_GREEN_FLASH = 3      
 
 # --- fault bitmask ---
-FAULT_COMM_TIMEOUT   = 0x01
+FAULT_JETSON_HEARTBEAT_LOST   = 0x01
 FAULT_OVER_CURRENT   = 0x02
 FAULT_ESTOP_ACTIVE   = 0x04
 FAULT_ENCODER_FAULT  = 0x08
 FAULT_UNDERVOLTAGE   = 0x10
 FAULT_FIRMWARE_FAULT = 0x20
 FAULT_PROTOCOL_ERROR = 0x40
+FAULT_C2_LINK_LOST     = 0x80
 
 FAULT_NAMES = [
-    (FAULT_COMM_TIMEOUT, "COMM_TIMEOUT"),
+    (FAULT_JETSON_HEARTBEAT_LOST, "JETSON_HEARTBEAT_LOST"),
     (FAULT_OVER_CURRENT, "OVER_CURRENT"),
     (FAULT_ESTOP_ACTIVE, "ESTOP_ACTIVE"),
     (FAULT_ENCODER_FAULT, "ENCODER_FAULT"),
     (FAULT_UNDERVOLTAGE, "UNDERVOLTAGE"),
     (FAULT_FIRMWARE_FAULT, "FIRMWARE_FAULT"),
     (FAULT_PROTOCOL_ERROR, "PROTOCOL_ERROR"),
+    (FAULT_C2_LINK_LOST, "C2_LINK_LOST"),
 ]
+
+C2_UNKNOWN = "C2_UNKNOWN" 
 
 # --- command age sentinels ---
 CMD_AGE_UNKNOWN = 0xFFFF   # no valid CONTROL frame has EVER arrived
@@ -63,11 +67,11 @@ CMD_AGE_MAX     = 0xFFFE   # saturation ceiling for a real measurement
 # --- payload layouts. '<' = little-endian, no padding, matching the explicit
 # byte-order handling in rover_protocol.cpp. Every message is <= 8 bytes so the
 # protocol runs on Classic CAN as well as CAN FD.
-CONTROL_FMT      = "<hhBBB"    # drive_cmd, steer_cmd, mode, stop, indicator_request
+CONTROL_FMT      = "<hhBBBB"   # drive_cmd, steer_cmd, mode, stop, indicator_request, c2_lost
 TELEM_MOTION_FMT = "<ii"      # enc_left, enc_right
 TELEM_STATUS_FMT = "<hhBHB"    # steer_fb, current_ca, fault_status, cmd_age_ms, indicator_request
 
-CONTROL_DLC      = struct.calcsize(CONTROL_FMT)       # 7
+CONTROL_DLC      = struct.calcsize(CONTROL_FMT)       # 8
 TELEM_MOTION_DLC = struct.calcsize(TELEM_MOTION_FMT)  # 8
 TELEM_STATUS_DLC = struct.calcsize(TELEM_STATUS_FMT)  # 8
 
@@ -88,6 +92,15 @@ MOTION_MODES = (MODE_MANUAL, MODE_AUTONOMOUS)
 
 def fault_names(bitmask):
     return [name for bit, name in FAULT_NAMES if bitmask & bit]
+
+def describe_faults(fault_status):
+    heartbeat_lost = fault_status & FAULT_JETSON_HEARTBEAT_LOST
+    if heartbeat_lost:
+        fault_status &= ~FAULT_C2_LINK_LOST 
+    names = fault_names(fault_status)
+    if heartbeat_lost:
+        names.append("C2_UNKNOWN")
+    return ",".join(names) or "none"
 
 
 def is_known_mode(mode):
@@ -120,8 +133,13 @@ def clamp_cmd_age_ms(age_ms):
 
 # --- encode ---------------------------------------------------------------
 
-def encode_control(drive_cmd, steer_cmd, mode, stop, indicator_request = INDICATOR_OFF):
-    return struct.pack(CONTROL_FMT, drive_cmd, steer_cmd, mode, 1 if stop else 0, indicator_request)
+def encode_control(drive_cmd, steer_cmd, mode, stop, c2_lost, indicator_request = INDICATOR_OFF):
+    # c2_lost has no default on purpose: a caller that forgot it would
+    # otherwise silently report the C2 link as healthy. It is byte 7 on the
+    # wire, after indicator_request (byte 6); argument order differs only
+    # because Python needs required arguments before defaulted ones.
+    return struct.pack(CONTROL_FMT, drive_cmd, steer_cmd, mode, 1 if stop else 0,
+                       indicator_request, 1 if c2_lost else 0)
 
 
 def encode_telemetry_motion(enc_left, enc_right):
@@ -140,7 +158,7 @@ def encode_telemetry_status(steer_fb, current_ca, fault_status, cmd_age_ms, indi
 def decode_control(payload):
     if len(payload) != CONTROL_DLC:
         return None
-    drive, steer, mode, stop, indicator_request = struct.unpack(CONTROL_FMT, payload)
+    drive, steer, mode, stop, indicator_request, c2_lost = struct.unpack(CONTROL_FMT, payload)
     # An undefined mode means the sender disagrees with us about the protocol,
     # exactly like a wrong DLC. Reject the frame rather than returning a value
     # the caller cannot reason about. Mirrors decodeControl() in C++.
@@ -148,7 +166,8 @@ def decode_control(payload):
         return None
     if indicator_request not in KNOWN_INDICATORS:
         return None 
-    return {"drive_cmd": drive, "steer_cmd": steer, "mode": mode, "stop": bool(stop), "indicator_request": indicator_request}
+    return {"drive_cmd": drive, "steer_cmd": steer, "mode": mode, "stop": bool(stop),
+            "indicator_request": indicator_request, "c2_lost": bool(c2_lost)}
 
 
 def decode_telemetry_motion(payload):
