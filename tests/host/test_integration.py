@@ -52,6 +52,24 @@ class RoverFixture(unittest.TestCase):
         return rp.fault_names(self.jl.status["fault_status"])
 
 
+class TestDescribeFaults(unittest.TestCase):
+    """Once JETSON_HEARTBEAT_LOST is set, the C2 bit is stale: show C2_UNKNOWN."""
+
+    def test_c2_state_follows_the_heartbeat(self):
+        cases = [
+            (0x00, "none"),
+            (rp.FAULT_C2_LINK_LOST, "C2_LINK_LOST"),
+            (rp.FAULT_JETSON_HEARTBEAT_LOST, "JETSON_HEARTBEAT_LOST,C2_UNKNOWN"),
+            (rp.FAULT_JETSON_HEARTBEAT_LOST | rp.FAULT_C2_LINK_LOST,
+             "JETSON_HEARTBEAT_LOST,C2_UNKNOWN"),
+            (rp.FAULT_JETSON_HEARTBEAT_LOST | rp.FAULT_OVER_CURRENT | rp.FAULT_C2_LINK_LOST,
+             "JETSON_HEARTBEAT_LOST,OVER_CURRENT,C2_UNKNOWN"),
+        ]
+        for fault_status, expected in cases:
+            with self.subTest(fault_status=hex(fault_status)):
+                self.assertEqual(rp.describe_faults(fault_status), expected)
+
+
 class TestEndToEnd(RoverFixture):
     def test_normal_operation(self):
         self.drive(0.6)
@@ -82,6 +100,21 @@ class TestEndToEnd(RoverFixture):
         self.drive(0.5)                      # commands resume
         self.assertEqual(self.faults(), [], "fault did not clear on its own")
         self.assertGreater(self.jl.motion["enc_left"], frozen)
+
+    def test_c2_reads_unknown_once_the_jetson_goes_silent(self):
+        # The C2 bit is copied from the last CONTROL frame, so after the
+        # watchdog trips it is stale. A stale LOST must not be shown as LOST.
+        self.drive(0.6, c2_lost=True)
+        self.assertEqual(rp.describe_faults(self.jl.status["fault_status"]),
+                         "C2_LINK_LOST")
+
+        self.drive(0.7, send=False)
+        self.assertIn("C2_LINK_LOST", self.faults(), "precondition: bit is still set")
+        self.assertEqual(rp.describe_faults(self.jl.status["fault_status"]),
+                         "JETSON_HEARTBEAT_LOST,C2_UNKNOWN")
+
+        self.drive(0.5)                      # Jetson back, C2 fine
+        self.assertEqual(rp.describe_faults(self.jl.status["fault_status"]), "none")
 
     def test_stop_flag_is_honoured_end_to_end(self):
         self.drive(0.5)

@@ -114,6 +114,15 @@ base station drops while onboard autonomy keeps running.
   `FAULT_C2_LINK_LOST` is raised in **every** mode. During an autonomous run
   it is the only sign that the rover is out of contact. This per-mode policy is
   an initial choice and may be revised.
+- **Once `JETSON_HEARTBEAT_LOST` is set, the C2 bit is unknown, not OK or
+  LOST.** The controller only knows `c2_lost` from the last `CONTROL` frame, so
+  when the Jetson goes silent that value goes stale: a clear bit ten seconds
+  later does not mean C2 is fine, and a set bit does not mean it is still down.
+  This needs no wire change, because the heartbeat bit travels in the same
+  frame. Receivers apply the rule: `describe_faults()` in `host/rover_protocol.py`
+  hides the stale `C2_LINK_LOST` and reports `C2_UNKNOWN` instead. Keep the two
+  apart: LOST (decided by the Jetson's `C2Monitor`) is what lets autonomy keep
+  driving; UNKNOWN only stops a dashboard from trusting a stale value.
 
 **`mode` is validated, and an undefined value stops the rover.** The field is a
 uint8, so it carries 256 possible values where three are defined. Two separate
@@ -166,7 +175,7 @@ kind of bad telemetry because it looks plausible on a dashboard.
 | `0x10` | `UNDERVOLTAGE` | Supply voltage low (placeholder) |
 | `0x20` | `FIRMWARE_FAULT` | This boot followed a watchdog reset (section 5.2) |
 | `0x40` | `PROTOCOL_ERROR` | The last frame on our id was uninterpretable: wrong DLC, an undefined `mode`, or an undefined `indicator_request`. Self-clears when a valid frame arrives. |
-| `0x80` | `C2_LINK_LOST` | The last `CONTROL` frame reported the base station ↔ Jetson link lost (`c2_lost = 1`). Raised in every mode; stops the rover only in `MANUAL` (section 3.1). |
+| `0x80` | `C2_LINK_LOST` | The last `CONTROL` frame reported the base station ↔ Jetson link lost (`c2_lost = 1`). Raised in every mode; stops the rover only in `MANUAL` (section 3.1). **Stale while `JETSON_HEARTBEAT_LOST` is set**: receivers must then treat the C2 state as unknown. |
 
 **Command age**, with two distinct reserved values:
 
@@ -335,7 +344,7 @@ are derived from measured actuator response yet.
 ## 7. Demonstration and tests — no hardware required
 
 ```
-make test     # 45 C++ tests + 18 host tests
+make test     # 45 C++ tests + 20 host tests
 make demo     # the message-exchange demonstration
 ```
 
@@ -344,13 +353,14 @@ for 800 ms (well past the 300 ms watchdog) and restores it. Captured output:
 
 ```
 -- B: link cut -- Jetson stops sending (800ms > 300ms watchdog) --
-  t= 1.54s  cmd_age=309ms    enc_left=  +36550  current=  +0.00A  faults=JETSON_HEARTBEAT_LOST
-  t= 1.70s  cmd_age=459ms    enc_left=  +36550  current=  +0.00A  faults=JETSON_HEARTBEAT_LOST
-  t= 1.86s  cmd_age=659ms    enc_left=  +36550  current=  +0.00A  faults=JETSON_HEARTBEAT_LOST
+  t= 1.54s  cmd_age=309ms    enc_left=  +36550  current=  +0.00A  faults=JETSON_HEARTBEAT_LOST,C2_UNKNOWN
+  t= 1.70s  cmd_age=459ms    enc_left=  +36550  current=  +0.00A  faults=JETSON_HEARTBEAT_LOST,C2_UNKNOWN
+  t= 1.86s  cmd_age=659ms    enc_left=  +36550  current=  +0.00A  faults=JETSON_HEARTBEAT_LOST,C2_UNKNOWN
 ```
 
-`cmd_age` climbs, `JETSON_HEARTBEAT_LOST` appears, current falls to zero and the
-encoders freeze — then it all clears by itself once `CONTROL` resumes.
+`cmd_age` climbs, `JETSON_HEARTBEAT_LOST` appears (with `C2_UNKNOWN`, since the
+C2 bit is now stale), current falls to zero and the encoders freeze — then it
+all clears by itself once `CONTROL` resumes.
 
 Against real hardware, the same host script runs unchanged:
 

@@ -58,6 +58,8 @@ FAULT_NAMES = [
     (FAULT_C2_LINK_LOST, "C2_LINK_LOST"),
 ]
 
+C2_UNKNOWN = "C2_UNKNOWN" 
+
 # --- command age sentinels ---
 CMD_AGE_UNKNOWN = 0xFFFF   # no valid CONTROL frame has EVER arrived
 CMD_AGE_MAX     = 0xFFFE   # saturation ceiling for a real measurement
@@ -90,6 +92,15 @@ MOTION_MODES = (MODE_MANUAL, MODE_AUTONOMOUS)
 
 def fault_names(bitmask):
     return [name for bit, name in FAULT_NAMES if bitmask & bit]
+
+def describe_faults(fault_status):
+    heartbeat_lost = fault_status & FAULT_JETSON_HEARTBEAT_LOST
+    if heartbeat_lost:
+        fault_status &= ~FAULT_C2_LINK_LOST 
+    names = fault_names(fault_status)
+    if heartbeat_lost:
+        names.append("C2_UNKNOWN")
+    return ",".join(names) or "none"
 
 
 def is_known_mode(mode):

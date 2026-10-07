@@ -92,7 +92,7 @@ class JetsonLink:
     def format_status(self, elapsed):
         if self.status is None:
             return "[t=%5.1fs] waiting for telemetry..." % elapsed
-        faults = ",".join(rp.fault_names(self.status["fault_status"])) or "none"
+        faults = rp.describe_faults(self.status["fault_status"])
         age = self.status["cmd_age_ms"]
         age_txt = ("never" if age == rp.CMD_AGE_UNKNOWN
                    else ">%dms" % rp.CMD_AGE_MAX if age == rp.CMD_AGE_MAX

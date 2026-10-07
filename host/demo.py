@@ -32,7 +32,7 @@ def show(jl, t0, label_shown, last_print):
     jl.poll()
     now = time.monotonic() - t0
     if jl.status and (now - last_print) > 0.15:
-        faults = ",".join(rp.fault_names(jl.status["fault_status"])) or "none"
+        faults = rp.describe_faults(jl.status["fault_status"])
         age = jl.status["cmd_age_ms"]
         age_txt = "never" if age == rp.CMD_AGE_UNKNOWN else "%dms" % age
         enc = (jl.motion or {"enc_left": 0})["enc_left"]
