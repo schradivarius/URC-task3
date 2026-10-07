@@ -243,3 +243,71 @@ class TestBusHygiene(RoverFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestC2LinkLoss(RoverFixture):
+    """C2 (base-station) loss against the real compiled controller.
+
+    The point of these: C2 loss and Jetson heartbeat loss must NOT behave the
+    same way. A silent Jetson means nothing is driving, so it stops the rover
+    in every mode. C2 loss means the OPERATOR is gone -- which is fatal in
+    MANUAL, where the operator was the driver, and expected in AUTONOMOUS,
+    where the rover is supposed to carry on by itself. Collapsing the two
+    would strand the rover every time the base-station link blipped during an
+    autonomous run.
+    """
+
+    def enc(self):
+        self.assertIsNotNone(self.jl.motion, "no motion telemetry received")
+        return self.jl.motion["enc_left"]
+
+    def test_c2_loss_stops_the_rover_in_manual(self):
+        self.drive(0.4, drive=600, mode=rp.MODE_MANUAL, c2_lost=True)
+        before = self.enc()
+        self.drive(0.4, drive=600, mode=rp.MODE_MANUAL, c2_lost=True)
+        self.assertEqual(self.enc(), before, "the wheels kept turning")
+        self.assertEqual(self.jl.status["current_a"], 0.0)
+        self.assertIn("C2_LINK_LOST", self.faults())
+
+    def test_c2_loss_does_not_stop_the_rover_in_autonomous(self):
+        self.drive(0.4, drive=600, mode=rp.MODE_AUTONOMOUS, c2_lost=True)
+        before = self.enc()
+        self.drive(0.4, drive=600, mode=rp.MODE_AUTONOMOUS, c2_lost=True)
+        self.assertNotEqual(self.enc(), before,
+                            "C2 loss stopped an autonomous run")
+
+    def test_c2_loss_is_still_reported_in_autonomous(self):
+        # Not stopping is not the same as not caring. The operator has to be
+        # able to see that the link is down even while the rover keeps going.
+        self.drive(0.5, drive=600, mode=rp.MODE_AUTONOMOUS, c2_lost=True)
+        self.assertIn("C2_LINK_LOST", self.faults())
+
+    def test_the_fault_clears_when_c2_comes_back(self):
+        self.drive(0.4, drive=400, mode=rp.MODE_MANUAL, c2_lost=True)
+        self.assertIn("C2_LINK_LOST", self.faults())
+        self.drive(0.4, drive=400, mode=rp.MODE_MANUAL, c2_lost=False)
+        self.assertNotIn("C2_LINK_LOST", self.faults(),
+                         "the fault latched after the link recovered")
+
+    def test_decoded_telemetry_carries_a_structured_c2_state(self):
+        # A consumer should be able to branch on this without string-matching
+        # the human-readable fault listing.
+        self.drive(0.4, drive=400, mode=rp.MODE_MANUAL, c2_lost=True)
+        self.assertEqual(self.jl.status["c2_state"], rp.C2_STATE_LOST)
+        self.drive(0.4, drive=400, mode=rp.MODE_MANUAL, c2_lost=False)
+        self.assertEqual(self.jl.status["c2_state"], rp.C2_STATE_OK)
+
+    def test_a_silent_jetson_reports_c2_as_unknown(self):
+        self.drive(0.3, drive=400, mode=rp.MODE_MANUAL, c2_lost=False)
+        self.assertEqual(self.jl.status["c2_state"], rp.C2_STATE_OK)
+        self.drive(0.6, send=False)          # past the 300ms watchdog
+        self.assertEqual(self.jl.status["c2_state"], rp.C2_STATE_UNKNOWN,
+                         "reported a stale C2 reading while the Jetson was silent")
+
+    def test_the_rover_drives_again_once_c2_comes_back(self):
+        self.drive(0.4, drive=600, mode=rp.MODE_MANUAL, c2_lost=True)
+        self.drive(0.3, drive=600, mode=rp.MODE_MANUAL, c2_lost=False)
+        before = self.enc()
+        self.drive(0.4, drive=600, mode=rp.MODE_MANUAL, c2_lost=False)
+        self.assertNotEqual(self.enc(), before,
+                            "stayed halted after C2 recovered")

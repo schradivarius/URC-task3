@@ -96,6 +96,13 @@ class SimLink:
         except subprocess.TimeoutExpired:
             self.proc.kill()
         self._reader.join(timeout=1)
+        # The reader thread holds stdout until the child hits EOF, so this has
+        # to come after the join. Without it every SimLink leaks a pipe, which
+        # a run of the test suite made visible as ~10 ResourceWarnings.
+        try:
+            self.proc.stdout.close()
+        except Exception:
+            pass
 
 
 class SocketCanLink:
