@@ -78,7 +78,7 @@ status.
 |---|---|---|---|
 | `drive_cmd` | int16 | -1000..1000 | Desired drive, tenths of a percent of full effort |
 | `steer_cmd` | int16 | -1000..1000 | Desired steering, tenths of a percent of full range |
-| `mode` | uint8 | 0/1/2 | `0=SAFE, 1=TELEOP, 2=AUTONOMOUS` |
+| `mode` | uint8 | 0/1/2 | `0=SAFE, 1=TELEOP, 2=AUTONOMOUS`. `3=FAULT` exists but is never sent (see below) |
 | `stop` | uint8 | 0/1 | Forces an immediate stop regardless of `mode` |
 | `indicator_request` | uint8 | 0/1/2/3 | Status light the Jetson **asks** for — see §3.4. The MCU decides what is actually shown. |
 | `c2_lost` | uint8 | 0/1 | `1` = the Jetson has lost the base-station (C2) link. Decided by the Jetson, see below. |
@@ -107,7 +107,7 @@ base station drops while onboard autonomy keeps running.
 
   | Mode | `c2_lost = 1` → | Why |
   |---|---|---|
-  | `TELEOP` | **stop** | The operator's commands can no longer arrive |
+  | `TELEOP` | **stop**, active mode `FAULT` | The operator's commands can no longer arrive |
   | `AUTONOMOUS` | **keep driving** | The Jetson is driving, and is provably alive or the command watchdog would already have stopped the rover |
   | `SAFE` | stopped anyway | — |
 
@@ -125,12 +125,12 @@ base station drops while onboard autonomy keeps running.
   driving; UNKNOWN only stops a dashboard from trusting a stale value.
 
 **`mode` is validated, and an undefined value stops the rover.** The field is a
-uint8, so it carries 256 possible values where three are defined. Two separate
+uint8, so it carries 256 possible values where three may be commanded. Two separate
 questions follow, and conflating them was [issue #4](https://github.com/schradivarius/URC-task3/issues/4):
 
 | Question | Answer |
 |---|---|
-| Is this value *defined*? (`isKnownMode`) | `0`, `1`, `2` — **`SAFE` is valid**, a legitimate command meaning "do not move" |
+| May the Jetson *send* it? (`isCommandableMode`) | `0`, `1`, `2` — **`SAFE` is valid**, a legitimate command meaning "do not move". `FAULT` (`3`) is not |
 | May the rover *move*? (`modePermitsMotion`) | `TELEOP` or `AUTONOMOUS` only — a **whitelist** |
 
 A receiver **rejects** a frame carrying an undefined mode, exactly as it
@@ -140,8 +140,26 @@ raised so the stop is explainable rather than silent.
 
 This is deliberately **not** forward-compatible the way an unknown CAN id is.
 A newer peer sending a mode this firmware does not implement must stop this
-rover, not be tolerated. If you add a fourth mode, every controller on the bus
+rover, not be tolerated. If you add a new mode, every controller on the bus
 needs the update before a host may send it.
+
+**Commanded mode vs active mode.** What the Jetson asks for is not always what
+the rover is doing. `RoverController::activeMode()` is the controller's own
+answer to "which mode am I executing right now?":
+
+| Situation | Active mode |
+|---|---|
+| No valid `CONTROL` yet, or none for 300 ms (`JETSON_HEARTBEAT_LOST`) | `FAULT` |
+| `TELEOP` commanded, but `c2_lost = 1` | `FAULT` |
+| Anything else | the commanded mode |
+
+`effectiveStop()` and `indicatorState()` are both derived from it, so the rover
+moves only in `TELEOP` or `AUTONOMOUS`, every involuntary stop is visible as
+`FAULT`, and the light never shows a mode the rover is not executing. `stop`
+pauses without changing the mode, and a rejected frame (`PROTOCOL_ERROR`)
+does not change it either: the last valid command applies until the
+watchdog. Sending the active mode to the Jetson is left to the telemetry
+packet work, which can fill its mode field from `activeMode()`.
 
 ### 3.2 `TELEM_MOTION` — `0x200`, DLC 8
 
@@ -203,7 +221,7 @@ Both use the same values:
 
 | Value | Name | Meaning |
 |---|---|---|
-| `0` | `INDICATOR_OFF` | Not operating: `SAFE`, or the watchdog has tripped. Also the neutral "no special request" |
+| `0` | `INDICATOR_OFF` | Not operating: active mode `SAFE` or `FAULT`. Also the neutral "no special request" |
 | `1` | `INDICATOR_BLUE` | Teleoperation (`TELEOP`) |
 | `2` | `INDICATOR_RED` | Autonomous operation |
 | `3` | `INDICATOR_GREEN_FLASH` | Autonomous arrival at a target |
@@ -211,15 +229,15 @@ Both use the same values:
 **The two fields can differ, on purpose.** The light exists so a judge can see
 what the rover is *actually* doing, and the MCU knows its own mode. So the
 Jetson's request is honoured only when it agrees with that mode; otherwise the
-MCU overrides it. The rules, checked top to bottom, first match wins
-(`RoverController::indicatorState()`):
+MCU overrides it. The light follows the **active mode** (section 3.1), in
+`RoverController::indicatorState()`:
 
-| # | Condition | Shown | Request |
-|---|---|---|---|
-| 1 | Watchdog tripped | `OFF` | ignored |
-| 2 | Mode `SAFE` | `OFF` | ignored |
-| 3 | Mode `TELEOP` | `BLUE` | ignored — a human-driven rover never shows red or green |
-| 4 | Mode `AUTONOMOUS` | `GREEN_FLASH` if green was requested, else `RED` | only green matters |
+| Active mode | Shown | Request |
+|---|---|---|
+| `FAULT` | `OFF` | ignored — Jetson heartbeat lost, or C2 lost while in `TELEOP` |
+| `SAFE` | `OFF` | ignored |
+| `TELEOP` | `BLUE` | ignored — a human-driven rover never shows red or green |
+| `AUTONOMOUS` | `GREEN_FLASH` if green was requested, else `RED` | only green matters |
 
 `stop` does not change the light: a paused autonomous rover is still in
 autonomous operation, so it stays red.
@@ -267,7 +285,8 @@ Four triggers — **jetson heartbeat lost**, **explicit `stop`**, **any mode tha
 does not positively permit motion**, and **C2 lost while in `TELEOP`** — all
 force a stop through a single function, `RoverController::effectiveStop()`.
 There is exactly one place in the codebase where "should this rover be moving?"
-is answered.
+is answered. The first and fourth reach it as active mode `FAULT` (section
+3.1), so every stop the operator did not ask for is visible as a mode.
 
 The first and fourth are deliberately different. Jetson heartbeat loss stops
 the rover in every mode, because nothing is driving it. C2 loss stops it only in

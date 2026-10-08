@@ -114,27 +114,45 @@ static void control_outranks_telemetry_on_the_bus() {
 // --- mode validation (issue #4) ---------------------------------------------
 
 static void mode_predicates_cover_all_256_values() {
-    // REGRESSION, issue #4. `mode` is a uint8: 256 values, 3 defined. The
+    // REGRESSION, issue #4. `mode` is a uint8: 256 values, 3 commandable. The
     // original effectiveStop() asked "is mode == SAFE?" and stopped only
     // then, so every undefined value read as drivable and permitted full
     // throttle. A safety predicate must fail CLOSED. Exhaustive here because
     // there are only 256 cases and the cost of missing one is a moving rover.
     for (int m = 0; m <= 255; ++m) {
         const uint8_t mode = static_cast<uint8_t>(m);
-        const bool known = (m == MODE_SAFE || m == MODE_TELEOP || m == MODE_AUTONOMOUS);
+        const bool commandable = (m == MODE_SAFE || m == MODE_TELEOP || m == MODE_AUTONOMOUS);
         const bool drivable = (m == MODE_TELEOP || m == MODE_AUTONOMOUS);
-        CHECK_EQ(isKnownMode(mode), known);
+        CHECK_EQ(isCommandableMode(mode), commandable);
         CHECK_EQ(modePermitsMotion(mode), drivable);
     }
 }
 
-static void safe_is_known_but_not_drivable() {
+static void safe_is_commandable_but_not_drivable() {
     // The distinction that makes the fix correct: SAFE is a LEGITIMATE
     // command (so decode accepts it) that happens to forbid motion. An
     // undefined value is a PROTOCOL ERROR (so decode rejects it). Conflating
     // the two is what produced the bug.
-    CHECK(isKnownMode(MODE_SAFE));
+    CHECK(isCommandableMode(MODE_SAFE));
     CHECK(!modePermitsMotion(MODE_SAFE));
+}
+
+static void fault_is_never_commanded_or_driven() {
+    // FAULT is a state the controller enters on its own. A Jetson that sends
+    // it is confused about the protocol, exactly like an undefined value.
+    CHECK(!isCommandableMode(MODE_FAULT));
+    CHECK(!modePermitsMotion(MODE_FAULT));
+    ControlMsg out;
+    uint8_t buf[8] = {0};
+    CHECK(!decodeControl(buf, encodeControl({100, 0, MODE_FAULT, 0, INDICATOR_OFF, 0}, buf), out));
+}
+
+static void mode_values_are_fixed_on_the_wire() {
+    // Names may change; the bytes on the bus must not.
+    CHECK_EQ(MODE_SAFE, 0);
+    CHECK_EQ(MODE_TELEOP, 1);
+    CHECK_EQ(MODE_AUTONOMOUS, 2);
+    CHECK_EQ(MODE_FAULT, 3);
 }
 
 static void undefined_mode_is_rejected_at_decode() {
@@ -211,7 +229,9 @@ int main() {
     RUN_TEST(every_message_fits_classic_can);
     RUN_TEST(control_outranks_telemetry_on_the_bus);
     RUN_TEST(mode_predicates_cover_all_256_values);
-    RUN_TEST(safe_is_known_but_not_drivable);
+    RUN_TEST(safe_is_commandable_but_not_drivable);
+    RUN_TEST(fault_is_never_commanded_or_driven);
+    RUN_TEST(mode_values_are_fixed_on_the_wire);
     RUN_TEST(undefined_mode_is_rejected_at_decode);
     RUN_TEST(protocol_error_has_its_own_fault_bit);
     RUN_TEST(encoder_wrap_avoids_undefined_behaviour);

@@ -303,6 +303,71 @@ static void telemetry_does_not_burst_after_a_stall() {
     CHECK(!ctl.telemetryDue());        // exactly one, not a hundred
 }
 
+// --- active mode: what the rover is actually executing ----------------------
+
+static void boot_reports_fault_until_the_jetson_speaks() {
+    RoverController ctl = freshController();
+    CHECK_EQ(ctl.activeMode(), MODE_FAULT);
+}
+
+static void active_mode_follows_the_commanded_mode() {
+    const uint8_t modes[] = {MODE_SAFE, MODE_TELEOP, MODE_AUTONOMOUS};
+    for (uint8_t mode : modes) {
+        RoverController ctl = freshController();
+        sendControl(ctl, 500, 0, mode, 0, 0);
+        CHECK_EQ(ctl.activeMode(), mode);
+    }
+}
+
+static void heartbeat_loss_is_a_fault_in_every_mode() {
+    const uint8_t modes[] = {MODE_SAFE, MODE_TELEOP, MODE_AUTONOMOUS};
+    for (uint8_t mode : modes) {
+        RoverController ctl = freshController();
+        sendControl(ctl, 500, 0, mode, 0, 0);
+        advance(299);
+        CHECK_EQ(ctl.activeMode(), mode);          // one ms early: still fine
+        advance(1);
+        CHECK_EQ(ctl.activeMode(), MODE_FAULT);
+    }
+}
+
+static void fault_clears_when_commands_resume() {
+    RoverController ctl = freshController();
+    sendControl(ctl, 500, 0, MODE_TELEOP, 0, 0);
+    advance(300);
+    CHECK_EQ(ctl.activeMode(), MODE_FAULT);
+    sendControl(ctl, 500, 0, MODE_TELEOP, 0, 0);
+    CHECK_EQ(ctl.activeMode(), MODE_TELEOP);
+}
+
+static void c2_loss_faults_teleop_but_not_autonomy() {
+    RoverController ctl = freshController();
+    sendControl(ctl, 500, 0, MODE_TELEOP, 0, 1);
+    CHECK_EQ(ctl.activeMode(), MODE_FAULT);
+    CHECK(ctl.effectiveStop());
+
+    sendControl(ctl, 500, 0, MODE_AUTONOMOUS, 0, 1);
+    CHECK_EQ(ctl.activeMode(), MODE_AUTONOMOUS);
+    CHECK(!ctl.effectiveStop());
+}
+
+static void a_pause_is_not_a_fault() {
+    RoverController ctl = freshController();
+    sendControl(ctl, 500, 0, MODE_AUTONOMOUS, 1, 0);
+    CHECK(ctl.effectiveStop());
+    CHECK_EQ(ctl.activeMode(), MODE_AUTONOMOUS);
+}
+
+static void fault_cannot_be_commanded() {
+    RoverController ctl = freshController();
+    sendControl(ctl, 500, 0, MODE_TELEOP, 0, 0);
+    CHECK(!sendControl(ctl, 500, 0, MODE_FAULT, 0, 0));
+    CHECK(ctl.protocolError());
+    CHECK_EQ(ctl.activeMode(), MODE_TELEOP);       // last valid command, until the watchdog
+}
+
+// --- status indicator -------------------------------------------------------
+
 static void autonomous_mode_shows_red() {
     RoverController ctl = freshController();
     sendControl(ctl, 500, 0, MODE_AUTONOMOUS, 0, 0, INDICATOR_RED);
@@ -344,6 +409,13 @@ static void paused_autonomy_stays_red() {
     CHECK_EQ(ctl.indicatorState(), INDICATOR_RED);
 }
 
+static void teleop_without_c2_shows_off() {
+    // The operator link is gone, so nobody is teleoperating: not blue.
+    RoverController ctl = freshController();
+    sendControl(ctl, 500, 0, MODE_TELEOP, 0, 1);
+    CHECK_EQ(ctl.indicatorState(), INDICATOR_OFF);
+}
+
 static void telemetry_reports_indicator_state(){
     RoverController ctl = freshController();
     sendControl(ctl, 500, 0, MODE_AUTONOMOUS, 0, 0, INDICATOR_GREEN_FLASH);
@@ -371,12 +443,20 @@ int main() {
     RUN_TEST(wrong_dlc_also_reports_a_protocol_error);
     RUN_TEST(a_foreign_id_is_not_a_protocol_error);
     RUN_TEST(telemetry_reports_jetson_heartbeat_lost_and_age);
+    RUN_TEST(boot_reports_fault_until_the_jetson_speaks);
+    RUN_TEST(active_mode_follows_the_commanded_mode);
+    RUN_TEST(heartbeat_loss_is_a_fault_in_every_mode);
+    RUN_TEST(fault_clears_when_commands_resume);
+    RUN_TEST(c2_loss_faults_teleop_but_not_autonomy);
+    RUN_TEST(a_pause_is_not_a_fault);
+    RUN_TEST(fault_cannot_be_commanded);
     RUN_TEST(autonomous_mode_shows_red);
     RUN_TEST(autonomous_mode_shows_green_flash);
     RUN_TEST(watchdog_trip_turns_indicator_off);
     RUN_TEST(teleop_mode_always_shows_blue);
     RUN_TEST(safe_mode_shows_off);
     RUN_TEST(paused_autonomy_stays_red);
+    RUN_TEST(teleop_without_c2_shows_off);
     RUN_TEST(telemetry_reports_indicator_state);
     RUN_TEST(age_is_unknown_before_the_first_command);
     RUN_TEST(sensor_faults_survive_alongside_jetson_heartbeat_lost);

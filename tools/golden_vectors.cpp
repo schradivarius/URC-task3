@@ -57,7 +57,7 @@ int main() {
     // mode 3 is drivable while the controller stops on it is its own bug.
     for (int m = 0; m <= 255; ++m) {
         std::printf("MODE|%d|%d%d\n", m,
-                    isKnownMode((uint8_t)m) ? 1 : 0,
+                    isCommandableMode((uint8_t)m) ? 1 : 0,
                     modePermitsMotion((uint8_t)m) ? 1 : 0);
     }
 

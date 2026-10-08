@@ -58,23 +58,18 @@ public:
     // True at boot, before anything has ever arrived.
     bool watchdogTripped() const;
 
-    // THE fail-safe decision. A Jetson heartbeat timeout, an explicit stop
-    // flag, any mode that does not positively permit motion, and C2 loss while
-    // in TELEOP all force a stop through this one function, so there is
-    // exactly one place where "should the rover be moving?" is answered.
-    //
-    // The mode test is a whitelist (modePermitsMotion), not "== SAFE".
-    // Asking only about SAFE let every undefined mode value read as
-    // drivable -- see issue #4 and the note in rover_protocol.h.
-    //
-    // Heartbeat loss and C2 loss are deliberately NOT equivalent. A silent
-    // Jetson means nothing is driving, so it stops the rover in every mode. C2
-    // loss (reported by the Jetson in CONTROL.c2_lost) stops it only in TELEOP,
-    // where the operator's commands can no longer arrive. In AUTONOMOUS the
-    // Jetson keeps driving, and the heartbeat watchdog still stops the rover
-    // if the Jetson itself goes quiet. See PROTOCOL.md section 3.1.
+    // The mode the rover is actually executing: the commanded mode, or
+    // MODE_FAULT when a link that mode needs is gone -- the Jetson (heartbeat
+    // lost, any mode) or the operator (C2 lost while in TELEOP). Autonomy
+    // keeps running without C2. See PROTOCOL.md section 3.1.
+    uint8_t activeMode() const;
+
+    // THE fail-safe decision, and the one place "should the rover be moving?"
+    // is answered: only while the active mode permits motion (a whitelist,
+    // issue #4) and the stop flag is clear.
     bool effectiveStop() const;
 
+    // The status light for the active mode (PROTOCOL.md section 3.4).
     uint8_t indicatorState() const;
 
     // The drive/steer actually permitted right now: zeroed under stop, so a
