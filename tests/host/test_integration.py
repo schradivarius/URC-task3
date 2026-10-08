@@ -37,7 +37,7 @@ class RoverFixture(unittest.TestCase):
         self.link.close()
 
     def drive(self, seconds, drive=400, steer=100,
-              mode=rp.MODE_MANUAL, stop=False, send=True, c2_lost=False):
+              mode=rp.MODE_TELEOP, stop=False, send=True, c2_lost=False):
         """Send CONTROL at 20 Hz (or stay silent) for `seconds`, polling."""
         end = time.monotonic() + seconds
         while time.monotonic() < end:
@@ -137,8 +137,8 @@ class TestEndToEnd(RoverFixture):
         self.drive(0.5)                      # releasing stop resumes motion,
         self.assertGreater(self.jl.motion["enc_left"], halted)   # no mode change
 
-    def test_disabled_mode_never_moves(self):
-        self.drive(0.6, drive=1000, steer=1000, mode=rp.MODE_DISABLED)
+    def test_safe_mode_never_moves(self):
+        self.drive(0.6, drive=1000, steer=1000, mode=rp.MODE_SAFE)
         self.assertEqual(self.jl.motion["enc_left"], 0)
         self.assertEqual(self.jl.status["current_ca"], 0)
 
@@ -147,7 +147,7 @@ class TestUndefinedMode(RoverFixture):
     """Issue #4, end to end against the real compiled controller.
 
     `mode` is a uint8 carrying 256 possible values where 3 are defined. Before
-    the fix, any undefined value read as "not DISABLED" and permitted full
+    the fix, any undefined value read as "not SAFE" and permitted full
     throttle. These drive the actual firmware logic, not a model of it.
     """
 
@@ -196,11 +196,11 @@ class TestUndefinedMode(RoverFixture):
                          "PROTOCOL_ERROR latched instead of self-clearing")
         self.assertGreater(self.jl.motion["enc_left"], 0)
 
-    def test_disabled_mode_is_still_accepted_as_a_valid_command(self):
-        """DISABLED is KNOWN and VALID -- a legitimate command meaning "do not
+    def test_safe_mode_is_still_accepted_as_a_valid_command(self):
+        """SAFE is KNOWN and VALID -- a legitimate command meaning "do not
         move". It must not be rejected as a protocol error; conflating the two
         is what caused the bug."""
-        self.drive(0.5, drive=1000, mode=rp.MODE_DISABLED)
+        self.drive(0.5, drive=1000, mode=rp.MODE_SAFE)
         self.assertEqual(self.jl.motion["enc_left"], 0)
         self.assertNotIn("PROTOCOL_ERROR", self.faults())
         self.assertNotIn("JETSON_HEARTBEAT_LOST", self.faults())
@@ -218,7 +218,7 @@ class TestBusHygiene(RoverFixture):
         # including for watchdog purposes.
         end = time.monotonic() + 0.7
         while time.monotonic() < end:
-            self.link.send(0x321, rp.encode_control(1000, 0, rp.MODE_MANUAL, False, c2_lost=False))
+            self.link.send(0x321, rp.encode_control(1000, 0, rp.MODE_TELEOP, False, c2_lost=False))
             self.jl.poll()
             time.sleep(0.02)
         self.jl.poll()

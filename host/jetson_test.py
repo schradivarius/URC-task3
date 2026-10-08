@@ -121,7 +121,7 @@ def run(link, c2, duration_s, verbose=True):
             drive = 300 if int(elapsed) % 4 < 2 else -300
             steer = int(200 * ((elapsed % 2) - 1))
             c2_loss = c2_link.poll_c2_lost(c2, monitor, now)
-            jl.send_control(drive, steer, rp.MODE_MANUAL, stop=False, c2_lost=c2_loss)
+            jl.send_control(drive, steer, rp.MODE_TELEOP, stop=False, c2_lost=c2_loss)
             t_next += period
             if now - t_next > period:
                 t_next = now + period          # do not burst after a stall

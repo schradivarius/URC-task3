@@ -26,11 +26,14 @@ CAN_ID_TELEM_MOTION = 0x200
 CAN_ID_TELEM_STATUS = 0x201
 
 # --- operating modes ---
-MODE_DISABLED   = 0
-MODE_MANUAL     = 1
+# The Jetson commands SAFE, TELEOP or AUTONOMOUS; the controller enters FAULT
+# on its own when a link the mode needs is gone. Strings are for display only.
+MODE_SAFE       = 0
+MODE_TELEOP     = 1
 MODE_AUTONOMOUS = 2
-MODE_NAMES = {MODE_DISABLED: "DISABLED", MODE_MANUAL: "MANUAL",
-              MODE_AUTONOMOUS: "AUTONOMOUS"}
+MODE_FAULT      = 3
+MODE_NAMES = {MODE_SAFE: "SAFE", MODE_TELEOP: "TELEOP",
+              MODE_AUTONOMOUS: "AUTONOMOUS", MODE_FAULT: "FAULT"}
 
 INDICATOR_OFF = 0       
 INDICATOR_BLUE = 1
@@ -85,9 +88,9 @@ INT32_MIN = -(2 ** 31)
 INT32_MAX = 2 ** 31 - 1
 
 
-KNOWN_MODES = (MODE_DISABLED, MODE_MANUAL, MODE_AUTONOMOUS)
+COMMANDABLE_MODES = (MODE_SAFE, MODE_TELEOP, MODE_AUTONOMOUS)
 KNOWN_INDICATORS = (INDICATOR_OFF, INDICATOR_BLUE, INDICATOR_RED, INDICATOR_GREEN_FLASH)
-MOTION_MODES = (MODE_MANUAL, MODE_AUTONOMOUS)
+MOTION_MODES = (MODE_TELEOP, MODE_AUTONOMOUS)
 
 
 def fault_names(bitmask):
@@ -103,17 +106,18 @@ def describe_faults(fault_status):
     return ",".join(names) or "none"
 
 
-def is_known_mode(mode):
-    """Is this a mode value the protocol defines? DISABLED counts: it is a
-    legitimate command that happens to mean "do not move"."""
-    return mode in KNOWN_MODES
+def is_commandable_mode(mode):
+    """May the Jetson send this mode in CONTROL? SAFE counts: it is a
+    legitimate command that happens to mean "do not move". FAULT does not:
+    only the controller enters it. Mirrors isCommandableMode() in C++."""
+    return mode in COMMANDABLE_MODES
 
 
 def mode_permits_motion(mode):
     """May the rover move in this mode? A WHITELIST, deliberately.
 
-    `mode` is a uint8, so 256 values fit where 3 are defined. Asking only
-    "is it DISABLED?" let every undefined value read as drivable (issue #4).
+    `mode` is a uint8, so 256 values fit where 4 are defined. Asking only
+    "is it SAFE?" let every undefined value read as drivable (issue #4).
     Mirrors modePermitsMotion() in firmware/src/rover_protocol.cpp.
     """
     return mode in MOTION_MODES
@@ -159,10 +163,11 @@ def decode_control(payload):
     if len(payload) != CONTROL_DLC:
         return None
     drive, steer, mode, stop, indicator_request, c2_lost = struct.unpack(CONTROL_FMT, payload)
-    # An undefined mode means the sender disagrees with us about the protocol,
-    # exactly like a wrong DLC. Reject the frame rather than returning a value
-    # the caller cannot reason about. Mirrors decodeControl() in C++.
-    if not is_known_mode(mode):
+    # A mode the Jetson may not send (undefined, or FAULT) means the sender
+    # disagrees with us about the protocol, exactly like a wrong DLC. Reject
+    # the frame rather than returning a value the caller cannot reason about.
+    # Mirrors decodeControl() in C++.
+    if not is_commandable_mode(mode):
         return None
     if indicator_request not in KNOWN_INDICATORS:
         return None 

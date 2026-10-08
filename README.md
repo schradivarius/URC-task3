@@ -94,7 +94,7 @@ implementation, rather than merely assumed to work:
   endianness flip
 - `wrong_dlc_does_not_refresh_the_watchdog` — the version-mismatch guard
 - `undefined_mode_does_not_permit_motion` — fails against the pre-fix
-  `mode == MODE_DISABLED` check, which permitted full throttle on any
+  `mode == MODE_DISABLED` check (now `MODE_SAFE`), which permitted full throttle on any
   undefined mode ([issue #4](https://github.com/schradivarius/URC-task3/issues/4))
 
 CI additionally builds with **clang** as a second toolchain and runs the suite

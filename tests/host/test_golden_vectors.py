@@ -61,29 +61,29 @@ class TestGoldenVectors(unittest.TestCase):
 
     def test_mode_predicates_agree_across_languages(self):
         """Issue #4. Both sides must agree, for all 256 values, on which modes
-        are defined and which permit motion. A host that thinks mode 3 is
+        may be commanded and which permit motion. A host that thinks mode 3 is
         drivable while the controller stops on it is its own bug."""
         rows = self.vectors("MODE")
         self.assertEqual(len(rows), 256, "C++ did not emit all 256 mode cases")
         for _, mode_s, flags in rows:
             mode = int(mode_s)
-            cpp_known, cpp_motion = flags[0] == "1", flags[1] == "1"
-            self.assertEqual(p.is_known_mode(mode), cpp_known,
-                             "is_known_mode disagrees for mode=%d" % mode)
+            cpp_commandable, cpp_motion = flags[0] == "1", flags[1] == "1"
+            self.assertEqual(p.is_commandable_mode(mode), cpp_commandable,
+                             "is_commandable_mode disagrees for mode=%d" % mode)
             self.assertEqual(p.mode_permits_motion(mode), cpp_motion,
                              "mode_permits_motion disagrees for mode=%d" % mode)
         # and the property that actually matters, stated directly
         for mode in range(256):
-            if mode not in (p.MODE_MANUAL, p.MODE_AUTONOMOUS):
+            if mode not in (p.MODE_TELEOP, p.MODE_AUTONOMOUS):
                 self.assertFalse(p.mode_permits_motion(mode),
                                  "mode=%d permits motion but should not" % mode)
 
     def test_undefined_mode_is_rejected_by_the_python_decoder(self):
-        for mode in (3, 4, 42, 128, 255):
+        for mode in (p.MODE_FAULT, 4, 42, 128, 255):
             payload = p.encode_control(1000, 500, mode, False, c2_lost=False)
             self.assertIsNone(p.decode_control(payload),
-                              "Python accepted undefined mode=%d" % mode)
-        for mode in (p.MODE_DISABLED, p.MODE_MANUAL, p.MODE_AUTONOMOUS):
+                              "Python accepted non-commandable mode=%d" % mode)
+        for mode in (p.MODE_SAFE, p.MODE_TELEOP, p.MODE_AUTONOMOUS):
             payload = p.encode_control(100, 0, mode, False, c2_lost=False)
             self.assertIsNotNone(p.decode_control(payload))
 

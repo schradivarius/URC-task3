@@ -26,12 +26,12 @@ int main() {
     char args[128];
 
     struct { int16_t d, s; uint8_t m, st, c2; } controls[] = {
-        {0, 0, MODE_DISABLED, 1, 0},
-        {500, -200, MODE_MANUAL, 0, 0},
+        {0, 0, MODE_SAFE, 1, 0},
+        {500, -200, MODE_TELEOP, 0, 0},
         {1000, -1000, MODE_AUTONOMOUS, 0, 0},
-        {-1000, 1000, MODE_MANUAL, 1, 0},
-        {-32768, 32767, MODE_MANUAL, 0, 0},
-        {-21846, 170, MODE_MANUAL, 0, 0},     // 0xAAAA: the old UART false-sync case
+        {-1000, 1000, MODE_TELEOP, 1, 0},
+        {-32768, 32767, MODE_TELEOP, 0, 0},
+        {-21846, 170, MODE_TELEOP, 0, 0},     // 0xAAAA: the old UART false-sync case
     };
     for (auto& c : controls) {
         ControlMsg m = {c.d, c.s, c.m, c.st, INDICATOR_OFF, c.c2};
@@ -57,7 +57,7 @@ int main() {
     // mode 3 is drivable while the controller stops on it is its own bug.
     for (int m = 0; m <= 255; ++m) {
         std::printf("MODE|%d|%d%d\n", m,
-                    isKnownMode((uint8_t)m) ? 1 : 0,
+                    isCommandableMode((uint8_t)m) ? 1 : 0,
                     modePermitsMotion((uint8_t)m) ? 1 : 0);
     }
 

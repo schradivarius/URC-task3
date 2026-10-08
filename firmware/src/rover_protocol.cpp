@@ -55,8 +55,8 @@ inline int32_t getI32(const uint8_t* b) {
 
 }  // namespace
 
-bool isKnownMode(uint8_t mode) {
-    return mode == MODE_DISABLED || mode == MODE_MANUAL || mode == MODE_AUTONOMOUS;
+bool isCommandableMode(uint8_t mode) {
+    return mode == MODE_SAFE || mode == MODE_TELEOP || mode == MODE_AUTONOMOUS;
 }
 
 bool isKnownIndicator(uint8_t indicator_request){
@@ -64,9 +64,9 @@ bool isKnownIndicator(uint8_t indicator_request){
 }       
 
 bool modePermitsMotion(uint8_t mode) {
-    // Whitelist. Every value not named here -- including DISABLED and every
+    // Whitelist. Every value not named here -- including SAFE and every
     // undefined value -- means stop. See the note in rover_protocol.h.
-    return mode == MODE_MANUAL || mode == MODE_AUTONOMOUS;
+    return mode == MODE_TELEOP || mode == MODE_AUTONOMOUS;
 }
 
 int32_t wrapI32(int64_t value) {
@@ -117,16 +117,17 @@ uint8_t encodeControl(const ControlMsg& msg, uint8_t* buf) {
 
 bool decodeControl(const uint8_t* buf, uint8_t len, ControlMsg& out) {
     if (len != CONTROL_DLC) return false;
-    // An undefined mode means the sender disagrees with us about the protocol,
-    // exactly like a wrong DLC. Reject the whole frame rather than storing a
-    // value we cannot reason about -- and, because a rejected frame does not
-    // refresh the command watchdog, the rover stops via the existing path and
-    // the operator gets a reported fault instead of a silent halt.
+    // A mode the Jetson may not send (undefined, or FAULT) means the sender
+    // disagrees with us about the protocol, exactly like a wrong DLC. Reject
+    // the whole frame rather than storing a value we cannot reason about --
+    // and, because a rejected frame does not refresh the command watchdog,
+    // the rover stops via the existing path and the operator gets a reported
+    // fault instead of a silent halt.
     //
     // This is intentionally NOT forward-compatible the way an unknown CAN id
     // is. A newer peer sending a mode we do not implement must stop this
     // rover, not be tolerated.
-    if (!isKnownMode(buf[4])) return false;
+    if (!isCommandableMode(buf[4])) return false;
     if (!isKnownIndicator(buf[6])) return false;
     out.drive_cmd = getI16(buf + 0);
     out.steer_cmd = getI16(buf + 2);

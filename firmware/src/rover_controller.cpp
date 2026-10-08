@@ -14,13 +14,13 @@ RoverController::RoverController(MillisFn now_ms,
       control_frames_accepted_(0),
       frames_ignored_(0),
       protocol_error_(false) {
-    // Boot state is the safest available: stopped, disabled, and with no
+    // Boot state is the safest available: stopped, in SAFE, and with no
     // command ever received -- so cmdAgeMs() reads CMD_AGE_UNKNOWN, the
     // watchdog is tripped from the very first cycle, and the rover cannot
     // move until the Jetson actually asks it to.
     last_control_.drive_cmd = 0;
     last_control_.steer_cmd = 0;
-    last_control_.mode      = MODE_DISABLED;
+    last_control_.mode      = MODE_SAFE;
     last_control_.stop      = 1;
     last_control_.indicator_request = INDICATOR_OFF;
     last_control_.c2_lost   = 1;
@@ -65,20 +65,24 @@ bool RoverController::watchdogTripped() const {
     return elapsedSinceControl() >= watchdog_timeout_ms_;
 }
 
+uint8_t RoverController::activeMode() const {
+    const bool jetson_lost   = watchdogTripped();
+    const bool operator_lost = last_control_.mode == MODE_TELEOP && last_control_.c2_lost != 0;
+    if (jetson_lost || operator_lost) return MODE_FAULT;
+    return last_control_.mode;
+}
+
 bool RoverController::effectiveStop() const {
-    return watchdogTripped()
-        || last_control_.stop != 0
-        || !modePermitsMotion(last_control_.mode)
-        || (last_control_.c2_lost != 0 && last_control_.mode == MODE_MANUAL);
+    return last_control_.stop != 0 || !modePermitsMotion(activeMode());
 }
 
 uint8_t RoverController::indicatorState() const {
-    if (watchdogTripped()) return INDICATOR_OFF;
-    if ( last_control_.mode == MODE_DISABLED )   return INDICATOR_OFF;
-    if ( last_control_.mode == MODE_MANUAL)     return INDICATOR_BLUE;
-    // only AUTONOMOUS can reach here: your mode work guarantees no other value exists
-    if ( last_control_.indicator_request == INDICATOR_GREEN_FLASH ) return INDICATOR_GREEN_FLASH;
-    return INDICATOR_RED;
+    const bool arrived = last_control_.indicator_request == INDICATOR_GREEN_FLASH;
+    switch (activeMode()) {
+        case MODE_TELEOP:     return INDICATOR_BLUE;
+        case MODE_AUTONOMOUS: return arrived ? INDICATOR_GREEN_FLASH : INDICATOR_RED;
+        default:              return INDICATOR_OFF;    // MODE_SAFE or MODE_FAULT
+    }
 }
 
 void RoverController::commandedOutputs(int16_t& drive, int16_t& steer) const {
