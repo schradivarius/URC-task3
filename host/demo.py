@@ -48,7 +48,7 @@ def phase(jl, t0, seconds, drive, steer, stop, label):
     last_print = 0.0
     while time.monotonic() - start < seconds:
         if drive is not None:
-            jl.send_control(drive, steer, rp.MODE_MANUAL, stop, c2_lost=False)
+            jl.send_control(drive, steer, rp.MODE_TELEOP, stop, c2_lost=False)
         last_print = show(jl, t0, label, last_print)
         time.sleep(0.02)
 
@@ -81,7 +81,7 @@ def corrupt_one_frame(jl, t0, seconds=1.0, bad_at=0.5):
                 sent_bad = True
                 print("  >>> sent ONE frame: mode=7 (undefined), drive=-1000 (full reverse)")
             else:
-                jl.send_control(500, 0, rp.MODE_MANUAL, False, c2_lost=False)
+                jl.send_control(500, 0, rp.MODE_TELEOP, False, c2_lost=False)
             next_send += period
         last_print = show(jl, t0, None, last_print)
         if jl.motion:

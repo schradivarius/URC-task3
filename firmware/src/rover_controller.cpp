@@ -14,13 +14,13 @@ RoverController::RoverController(MillisFn now_ms,
       control_frames_accepted_(0),
       frames_ignored_(0),
       protocol_error_(false) {
-    // Boot state is the safest available: stopped, disabled, and with no
+    // Boot state is the safest available: stopped, in SAFE, and with no
     // command ever received -- so cmdAgeMs() reads CMD_AGE_UNKNOWN, the
     // watchdog is tripped from the very first cycle, and the rover cannot
     // move until the Jetson actually asks it to.
     last_control_.drive_cmd = 0;
     last_control_.steer_cmd = 0;
-    last_control_.mode      = MODE_DISABLED;
+    last_control_.mode      = MODE_SAFE;
     last_control_.stop      = 1;
     last_control_.indicator_request = INDICATOR_OFF;
     last_control_.c2_lost   = 1;
@@ -69,13 +69,13 @@ bool RoverController::effectiveStop() const {
     return watchdogTripped()
         || last_control_.stop != 0
         || !modePermitsMotion(last_control_.mode)
-        || (last_control_.c2_lost != 0 && last_control_.mode == MODE_MANUAL);
+        || (last_control_.c2_lost != 0 && last_control_.mode == MODE_TELEOP);
 }
 
 uint8_t RoverController::indicatorState() const {
     if (watchdogTripped()) return INDICATOR_OFF;
-    if ( last_control_.mode == MODE_DISABLED )   return INDICATOR_OFF;
-    if ( last_control_.mode == MODE_MANUAL)     return INDICATOR_BLUE;
+    if ( last_control_.mode == MODE_SAFE )   return INDICATOR_OFF;
+    if ( last_control_.mode == MODE_TELEOP)     return INDICATOR_BLUE;
     // only AUTONOMOUS can reach here: your mode work guarantees no other value exists
     if ( last_control_.indicator_request == INDICATOR_GREEN_FLASH ) return INDICATOR_GREEN_FLASH;
     return INDICATOR_RED;

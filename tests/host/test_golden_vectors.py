@@ -74,7 +74,7 @@ class TestGoldenVectors(unittest.TestCase):
                              "mode_permits_motion disagrees for mode=%d" % mode)
         # and the property that actually matters, stated directly
         for mode in range(256):
-            if mode not in (p.MODE_MANUAL, p.MODE_AUTONOMOUS):
+            if mode not in (p.MODE_TELEOP, p.MODE_AUTONOMOUS):
                 self.assertFalse(p.mode_permits_motion(mode),
                                  "mode=%d permits motion but should not" % mode)
 
@@ -83,7 +83,7 @@ class TestGoldenVectors(unittest.TestCase):
             payload = p.encode_control(1000, 500, mode, False, c2_lost=False)
             self.assertIsNone(p.decode_control(payload),
                               "Python accepted undefined mode=%d" % mode)
-        for mode in (p.MODE_DISABLED, p.MODE_MANUAL, p.MODE_AUTONOMOUS):
+        for mode in (p.MODE_SAFE, p.MODE_TELEOP, p.MODE_AUTONOMOUS):
             payload = p.encode_control(100, 0, mode, False, c2_lost=False)
             self.assertIsNotNone(p.decode_control(payload))
 

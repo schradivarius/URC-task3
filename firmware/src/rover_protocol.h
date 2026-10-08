@@ -55,16 +55,16 @@ enum : uint32_t {
 
 // Operating modes (ControlMsg::mode)
 enum : uint8_t {
-    MODE_DISABLED   = 0,
-    MODE_MANUAL     = 1,
+    MODE_SAFE   = 0,
+    MODE_TELEOP     = 1,
     MODE_AUTONOMOUS = 2,
 };
 
 // Indicator Values (ControlMsg: LED indicator)          
 enum : uint8_t {
-    INDICATOR_OFF   = 0, // mode disabled or watchdog tripped
-    INDICATOR_BLUE = 1, // mode_manual lights blue LED
-    INDICATOR_RED = 2, // mode_autonomous lights red LED
+    INDICATOR_OFF   = 0, // SAFE, or the watchdog tripped
+    INDICATOR_BLUE = 1, // TELEOP lights blue LED
+    INDICATOR_RED = 2, // AUTONOMOUS lights red LED
     INDICATOR_GREEN_FLASH = 3 // target reached by autonomous mode
 };              
 
@@ -116,14 +116,14 @@ static const int32_t INT32_MAX_V = 2147483647;
 // bug this pair of functions exists to prevent (issue #4):
 //
 //   isKnownMode()      -- is this a value this protocol version defines?
-//                         DISABLED is KNOWN and VALID; it is a legitimate
+//                         SAFE is KNOWN and VALID; it is a legitimate
 //                         command that happens to mean "do not move".
 //   modePermitsMotion() -- may the rover move in this mode?
 //
 // modePermitsMotion is a WHITELIST, deliberately. The original code asked
-// "is mode == DISABLED?" and stopped only then, so any undefined value --
+// "is mode == SAFE?" and stopped only then, so any undefined value --
 // from a protocol mismatch, a faulty sender, or corruption in the software
-// path after CAN's CRC has already passed -- read as "not disabled" and
+// path after CAN's CRC has already passed -- read as "not SAFE" and
 // permitted full throttle. A safety predicate must fail CLOSED: anything this
 // firmware does not positively recognise as drivable means stop.
 // ---------------------------------------------------------------------------

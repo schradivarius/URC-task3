@@ -26,10 +26,10 @@ CAN_ID_TELEM_MOTION = 0x200
 CAN_ID_TELEM_STATUS = 0x201
 
 # --- operating modes ---
-MODE_DISABLED   = 0
-MODE_MANUAL     = 1
+MODE_SAFE   = 0
+MODE_TELEOP     = 1
 MODE_AUTONOMOUS = 2
-MODE_NAMES = {MODE_DISABLED: "DISABLED", MODE_MANUAL: "MANUAL",
+MODE_NAMES = {MODE_SAFE: "SAFE", MODE_TELEOP: "TELEOP",
               MODE_AUTONOMOUS: "AUTONOMOUS"}
 
 INDICATOR_OFF = 0       
@@ -85,9 +85,9 @@ INT32_MIN = -(2 ** 31)
 INT32_MAX = 2 ** 31 - 1
 
 
-KNOWN_MODES = (MODE_DISABLED, MODE_MANUAL, MODE_AUTONOMOUS)
+KNOWN_MODES = (MODE_SAFE, MODE_TELEOP, MODE_AUTONOMOUS)
 KNOWN_INDICATORS = (INDICATOR_OFF, INDICATOR_BLUE, INDICATOR_RED, INDICATOR_GREEN_FLASH)
-MOTION_MODES = (MODE_MANUAL, MODE_AUTONOMOUS)
+MOTION_MODES = (MODE_TELEOP, MODE_AUTONOMOUS)
 
 
 def fault_names(bitmask):
@@ -104,7 +104,7 @@ def describe_faults(fault_status):
 
 
 def is_known_mode(mode):
-    """Is this a mode value the protocol defines? DISABLED counts: it is a
+    """Is this a mode value the protocol defines? SAFE counts: it is a
     legitimate command that happens to mean "do not move"."""
     return mode in KNOWN_MODES
 
@@ -113,7 +113,7 @@ def mode_permits_motion(mode):
     """May the rover move in this mode? A WHITELIST, deliberately.
 
     `mode` is a uint8, so 256 values fit where 3 are defined. Asking only
-    "is it DISABLED?" let every undefined value read as drivable (issue #4).
+    "is it SAFE?" let every undefined value read as drivable (issue #4).
     Mirrors modePermitsMotion() in firmware/src/rover_protocol.cpp.
     """
     return mode in MOTION_MODES

@@ -56,7 +56,7 @@ inline int32_t getI32(const uint8_t* b) {
 }  // namespace
 
 bool isKnownMode(uint8_t mode) {
-    return mode == MODE_DISABLED || mode == MODE_MANUAL || mode == MODE_AUTONOMOUS;
+    return mode == MODE_SAFE || mode == MODE_TELEOP || mode == MODE_AUTONOMOUS;
 }
 
 bool isKnownIndicator(uint8_t indicator_request){
@@ -64,9 +64,9 @@ bool isKnownIndicator(uint8_t indicator_request){
 }       
 
 bool modePermitsMotion(uint8_t mode) {
-    // Whitelist. Every value not named here -- including DISABLED and every
+    // Whitelist. Every value not named here -- including SAFE and every
     // undefined value -- means stop. See the note in rover_protocol.h.
-    return mode == MODE_MANUAL || mode == MODE_AUTONOMOUS;
+    return mode == MODE_TELEOP || mode == MODE_AUTONOMOUS;
 }
 
 int32_t wrapI32(int64_t value) {
