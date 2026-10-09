@@ -397,11 +397,21 @@ colours, because the colour is a wiring decision and the meaning is not:
 | 1 | `INDICATOR_TELEOP` | blue | Under operator control |
 | 2 | `INDICATOR_AUTONOMOUS` | red | Driving itself |
 | 3 | `INDICATOR_ARRIVED` | flashing green | Autonomous arrival at a target |
-| 4 | `INDICATOR_FAULT` | *not red, blue or green* | Nothing is driving this rover |
+| 4 | `INDICATOR_FAULT` | **yellow** (placeholder) | Nothing is driving this rover |
 
-`INDICATOR_FAULT` must be wired to something a judge cannot mistake for one of
-the three scored colours — amber, or off with a separate annunciator. **Open
-hardware question**, noted in §9.
+**`INDICATOR_FAULT` is yellow for now, as a placeholder.** The binding
+constraint is that it must not be mistakable for one of the three scored
+states, so it cannot be red, blue or flashing green; yellow satisfies that, is
+the conventional "something is wrong" colour, and on an RGB LED costs nothing
+(red + green). Solid rather than flashing, deliberately: the scheme already
+spends *flashing* on arrival, and a second flashing state would leave the
+distinction resting on hue-while-blinking, which is the hardest thing to read
+at distance or on video.
+
+Still open, and the thing that could override the choice: whether the URC
+rules actually permit a fourth indication at all, or require that nothing be
+confusable with the three mandated states. That is a question for the rules
+document, not for this file (§9).
 
 **The two fields differ on purpose.** The controller knows its own mode, so the
 Jetson's request is honoured only where it agrees with that mode; otherwise the
@@ -647,9 +657,20 @@ Verified to fail on an injected endianness change.
   makes cheap.
 - **`controller_health` is always `NOT_REPORTED`** — no motor-driver telemetry
   is wired up. On a CAN bus that arrives as the drivers' own messages.
-- **`INDICATOR_FAULT` has no agreed colour.** It must not be red, blue or
-  flashing green, since URC scores those three. Amber, or off plus a separate
-  annunciator — a hardware decision nobody has made yet (§3.5.1).
+- **`INDICATOR_FAULT` is yellow as a placeholder** (§3.5.1). It satisfies the
+  one hard constraint — not confusable with the three scored states — but
+  nobody has confirmed against the URC rules document whether a fourth
+  indication is permitted at all, or whether the rules require that nothing
+  else be confusable with the mandated three. Check that before ordering
+  hardware; it could override the choice outright.
+- **Nothing drives the status light yet.** The chain stops at telemetry: the
+  protocol defines the states, `indicatorState()` decides which one applies,
+  `TELEM_STATE` reports it, and there is no pin assignment and no driver. The
+  only LED in `rover_firmware.ino` is `LED_PIN = 13`, the Teensy's onboard
+  one, used as a telemetry heartbeat blink and unrelated to the indicator. So
+  `indicator_state` is currently a value the Jetson can read and nobody can
+  see. This is a scored light, so it needs its own item on the hardware list
+  rather than riding along with the `setMotorOutputs()` stub.
 - **`drive_cmd` / `steer_cmd` are not range-checked on decode.** The ±1000
   range is a contract, not an enforced one: the decoder accepts any int16 and
   the motor layer owns clamping. [PR #16](https://github.com/schradivarius/URC-task3/pull/16)

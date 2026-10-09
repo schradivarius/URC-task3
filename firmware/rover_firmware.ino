@@ -55,6 +55,19 @@ using namespace rover;
 static const uint32_t CAN_BITRATE_HZ      = 500000;   // 500 kbps
 static const uint32_t HW_WATCHDOG_MS      = 1000;     // loop must feed within
 static const int      LED_PIN             = 13;       // Teensy onboard LED
+// LED_PIN is a telemetry heartbeat blink ONLY. It is not the status indicator.
+//
+// TODO (hardware): the URC status light has no pin assignment and no driver
+// yet. RoverController::indicatorState() already decides what it should show
+// and TELEM_STATE reports it, so the whole chain exists except the output --
+// indicator_state is currently a value the Jetson can read and nobody can see.
+// This light is scored, so it is its own hardware item, not part of the
+// setMotorOutputs() stub. Mapping (PROTOCOL.md 3.5.1):
+//   INDICATOR_OFF        off
+//   INDICATOR_TELEOP     blue
+//   INDICATOR_AUTONOMOUS red
+//   INDICATOR_ARRIVED    flashing green   (this firmware owns the flash rate)
+//   INDICATOR_FAULT      yellow, solid    (placeholder -- see PROTOCOL.md 9)
 static const int16_t  OVER_CURRENT_CA     = 4000;     // 40.00 A, placeholder
 static const int16_t  UNDERVOLTAGE_CV     = 2000;     // 20.00 V, placeholder
 
