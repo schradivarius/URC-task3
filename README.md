@@ -11,8 +11,8 @@ specification: **[PROTOCOL.md](PROTOCOL.md)**.
 
 | | |
 |---|---|
-| Protocol, safety logic, firmware | Implemented, **56 tests** passing |
-| Cross-language codec | Pinned byte-for-byte between C++ and Python |
+| Protocol, safety logic, firmware | Implemented, **111 tests** passing |
+| Cross-language codec | Pinned byte-for-byte, plus every validation predicate |
 | **Validated on real hardware** | **Not yet — see [Known gaps](#known-gaps)** |
 
 ---
@@ -27,7 +27,7 @@ than mocking them, so there is no dependency to manage.
 git clone https://github.com/schradivarius/URC-task3.git
 cd URC-task3
 
-make test     # 50 C++ tests + 35 host tests
+make test     # 74 C++ tests + 57 host tests
 make demo     # no-hardware message-exchange demonstration
 ```
 
@@ -50,6 +50,7 @@ host/                        Python — runs on the Jetson
   rover_config.py              constants (pinned to rover_config.h)
   rover_protocol.py            codec (pinned to the C++ one)
   can_link.py                  sim + python-can backends
+  c2_link.py                   C2 (base-station) link-loss detection
   jetson_test.py               live harness
   demo.py                      the demonstration
 
@@ -57,8 +58,8 @@ tools/
   rover_sim.cpp                simulator: REAL controller, fake plant
   golden_vectors.cpp           emits vectors for cross-language pinning
 
-tests/cpp/                   50 tests — firmware core
-tests/host/                  35 tests — config sync, golden vectors, integration
+tests/cpp/                   74 tests — firmware core
+tests/host/                  57 tests — config sync, golden vectors, integration
 ```
 
 The two files under `firmware/src/` have **no Arduino dependency and no
@@ -78,11 +79,11 @@ make test-host   # host side only — compiles the C++ core
 
 | Suite | Tests | Answers |
 |---|---:|---|
-| `tests/cpp/test_protocol.cpp` | 17 | Does the wire format encode and decode correctly? |
-| `tests/cpp/test_controller.cpp` | 33 | **Does the rover stop when it should?** |
-| `tests/host/test_config_sync.py` | 9 | Do the C++ and Python configs hold the same constants? |
-| `tests/host/test_golden_vectors.py` | 9 | Do C++ and Python agree byte-for-byte? |
-| `tests/host/test_integration.py` | 17 | Do both ends actually talk to each other? |
+| `tests/cpp/test_protocol.cpp` | 34 | Wire format, CRC-8, and every validation predicate |
+| `tests/cpp/test_controller.cpp` | 40 | **Does the rover stop when it should?** |
+| `tests/host/test_config_sync.py` | 12 | Do the C++ and Python configs hold the same constants? |
+| `tests/host/test_golden_vectors.py` | 23 | Do C++ and Python agree byte-for-byte? |
+| `tests/host/test_integration.py` | 22 | Do both ends actually talk to each other? |
 
 Every test is named for the failure it prevents, so the reason it exists
 outlives anyone's memory of writing it. **Start a safety review at
@@ -96,6 +97,19 @@ implementation, rather than merely assumed to work:
 - `test_python_encoder_matches_cpp_byte_for_byte` — fails against an injected
   endianness flip
 - `wrong_dlc_does_not_refresh_the_watchdog` — the version-mismatch guard
+- `a_bad_crc_does_not_refresh_the_watchdog` — the application-layer CRC's whole
+  purpose: corruption in the software path, which CAN's own CRC cannot see
+- `the_c2_link_is_never_derived_from_the_jetson_link` and
+  `c2_loss_stops_a_teleoperated_rover_but_not_an_autonomous_one` — the 2027
+  course has areas with no C2 line-of-sight while autonomy keeps working;
+  collapsing the two links would stop the rover exactly where it should keep
+  going
+- `a_stale_c2_bit_is_reported_as_unknown_not_as_ok_or_lost` — once the Jetson
+  goes silent the last forwarded C2 verdict is worthless, so the controller
+  stops asserting it rather than latching a claim it cannot vouch for
+- `a_non_stopping_fault_does_not_blank_the_indicator` — URC requires red while
+  autonomous, so an undervoltage warning must not take the light away from
+  what the rover is actually doing
 - `undefined_mode_does_not_permit_motion` — fails against the pre-fix
   `mode == MODE_DISABLED` check, which permitted full throttle on any
   undefined mode ([issue #4](https://github.com/schradivarius/URC-task3/issues/4))
