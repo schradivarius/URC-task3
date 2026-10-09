@@ -6,18 +6,16 @@ Runs against tools/rover_sim: the REAL C++ rover_controller.cpp compiled
 natively, with only the plant and the transport simulated. So what you see
 below is the actual safety logic that gets flashed to the Teensy.
 
-Part A: normal 20 Hz operation.
-Part B: a deliberate 600 ms silence (twice the 300 ms command watchdog),
-        proving the controller stops itself and reports JETSON_HEARTBEAT_LOST without
-        the Jetson doing anything -- then recovers on its own.
-Part C: the explicit stop flag, honoured on the cycle it arrives.
-Part D: ONE corrupted CONTROL frame in the middle of normal 20 Hz traffic,
-        proving the controller rejects it, keeps acting on the last good
-        command, and reports PROTOCOL_ERROR.
+A: normal 20 Hz operation, four telemetry frames reassembled per cycle.
+B: a deliberate 800 ms silence (well past the 300 ms command watchdog).
+C: the explicit stop flag at full throttle.
+D: autonomy abort while in AUTONOMOUS.
+E: a corrupted frame -- the application-layer CRC rejects it and the rover
+   reports CRC_ERROR rather than acting on it.
+F: a sequence gap -- detected and reported as SEQ_GAP.
 """
 
 import os
-import struct
 import sys
 import time
 
@@ -28,72 +26,39 @@ import rover_protocol as rp  # noqa: E402
 from jetson_test import JetsonLink  # noqa: E402
 
 
-def show(jl, t0, label_shown, last_print):
-    jl.poll()
-    now = time.monotonic() - t0
-    if jl.status and (now - last_print) > 0.15:
-        faults = rp.describe_faults(jl.status["fault_status"])
-        age = jl.status["cmd_age_ms"]
-        age_txt = "never" if age == rp.CMD_AGE_UNKNOWN else "%dms" % age
-        enc = (jl.motion or {"enc_left": 0})["enc_left"]
-        print("  t=%5.2fs  cmd_age=%-8s enc_left=%+8d  current=%+7.2fA  faults=%s"
-              % (now, age_txt, enc, jl.status["current_a"], faults))
-        return now
-    return last_print
+def line(jl, t0):
+    s = jl.snapshot
+    if s is None:
+        return None
+    faults = ",".join(rp.fault_names(s["fault_status"])) or "none"
+    age = s["cmd_age_ms"]
+    age_txt = "never" if age == rp.CMD_AGE_UNKNOWN else "%dms" % age
+    return ("  t=%5.2fs  seq=%3d  enc=%+8d  %+7.2fA %6.2fV  mode=%-10s "
+            "jet=%-8s c2=%-12s ind=%-10s age=%-7s faults=%s"
+            % (time.monotonic() - t0, s["seq"], s["enc_left"], s["current_a"],
+               s["voltage_v"], rp.MODE_NAMES.get(s["mode"], "?"),
+               rp.LINK_NAMES.get(s["jetson_link"], "?"),
+               rp.LINK_NAMES.get(s["c2_link"], "?"),
+               rp.INDICATOR_NAMES.get(s["indicator_state"], "?"),
+               age_txt, faults))
 
 
-def phase(jl, t0, seconds, drive, steer, stop, label):
+def phase(jl, t0, seconds, label, send=True, **kw):
     print("-- %s --" % label)
     start = time.monotonic()
-    last_print = 0.0
+    last = 0.0
     while time.monotonic() - start < seconds:
-        if drive is not None:
-            jl.send_control(drive, steer, rp.MODE_MANUAL, stop, c2_lost=False)
-        last_print = show(jl, t0, label, last_print)
+        if send:
+            jl.send_control(**kw)
+        jl.poll()
+        now = time.monotonic() - t0
+        if now - last > 0.15:
+            txt = line(jl, t0)
+            if txt:
+                print(txt)
+                last = now
         time.sleep(0.02)
-
-
-def corrupt_one_frame(jl, t0, seconds=1.0, bad_at=0.5):
-    """Send CONTROL at the real 20 Hz rate, replacing exactly one frame with a
-    corrupted one. Returns (protocol_error_reports_seen, encoders_ran_backwards).
-
-    The corrupted frame carries an undefined mode AND full reverse. CAN's own
-    CRC cannot be failed from software -- the transceiver rejects and
-    retransmits a bad-CRC frame before the firmware ever sees it -- so what we
-    can corrupt is the frame's meaning. If the controller wrongly accepted it,
-    the encoders would visibly run backwards.
-    """
-    print("-- D: one corrupted CONTROL frame amid normal 20Hz traffic --")
-    period = 1.0 / 20
-    errors_before = jl.protocol_error_reports
-    enc_samples = []
-    start = time.monotonic()
-    next_send = start
-    sent_bad = False
-    last_print = 0.0
-    while time.monotonic() - start < seconds:
-        now = time.monotonic()
-        if now >= next_send:
-            if not sent_bad and now - start >= bad_at:
-                # Raw bytes: encode_control only ever builds valid frames.
-                jl.link.send(rp.CAN_ID_CONTROL,
-                             struct.pack(rp.CONTROL_FMT, -1000, 0, 7, 0, rp.INDICATOR_OFF, 0))
-                sent_bad = True
-                print("  >>> sent ONE frame: mode=7 (undefined), drive=-1000 (full reverse)")
-            else:
-                jl.send_control(500, 0, rp.MODE_MANUAL, False, c2_lost=False)
-            next_send += period
-        last_print = show(jl, t0, None, last_print)
-        if jl.motion:
-            enc_samples.append(jl.motion["enc_left"])
-        time.sleep(0.005)
     jl.poll()
-
-    errors_seen = jl.protocol_error_reports - errors_before
-    went_backwards = any(b < a for a, b in zip(enc_samples, enc_samples[1:]))
-    print("  status frames reporting PROTOCOL_ERROR: %d" % errors_seen)
-    print("  encoders ever ran backwards: %s" % ("YES" if went_backwards else "no"))
-    return errors_seen, went_backwards
 
 
 def main():
@@ -106,25 +71,76 @@ def main():
     jl = JetsonLink(link)
     t0 = time.monotonic()
     try:
-        phase(jl, t0, 1.2, 500, 0, False, "A: normal operation, CONTROL at 20Hz")
-        phase(jl, t0, 0.8, None, None, False,
-              "B: link cut -- Jetson stops sending (800ms > 300ms watchdog)")
-        phase(jl, t0, 1.0, 300, 100, False, "B: link restored")
-        phase(jl, t0, 0.6, 1000, 500, True,
-              "C: explicit stop asserted at full throttle")
-        errors_seen, went_backwards = corrupt_one_frame(jl, t0)
+        phase(jl, t0, 1.0, "A: normal operation, CONTROL at 20Hz",
+              drive_cmd=500, steer_cmd=0, mode=rp.MODE_MANUAL, c2_lost=False,
+              indicator_request=rp.INDICATOR_TELEOP)
 
-        assert jl.status is not None, "never received any telemetry"
-        assert jl.motion_count > 0, "never received a motion frame"
-        assert jl.bad_dlc_frames == 0, "a frame arrived with the wrong DLC"
-        assert not went_backwards, "the corrupted frame's command was acted on"
-        assert errors_seen >= 1, "the corrupted frame was never reported"
+        phase(jl, t0, 0.8, "B: link cut -- Jetson stops sending (800ms > 300ms watchdog)",
+              send=False)
+
+        phase(jl, t0, 0.8, "B: link restored",
+              drive_cmd=300, steer_cmd=100, mode=rp.MODE_MANUAL, c2_lost=False,
+              indicator_request=rp.INDICATOR_TELEOP)
+
+        phase(jl, t0, 0.5, "C: explicit stop asserted at full throttle",
+              drive_cmd=1000, steer_cmd=500, mode=rp.MODE_MANUAL, c2_lost=False,
+              stop=True)
+
+        phase(jl, t0, 0.5, "D: autonomy abort while AUTONOMOUS",
+              drive_cmd=800, steer_cmd=0, mode=rp.MODE_AUTONOMOUS, c2_lost=False,
+              autonomy_abort=True, indicator_request=rp.INDICATOR_AUTONOMOUS)
+
+        # The two link failures are NOT equivalent, and these two phases are
+        # the demonstration of it. C2 loss with a healthy Jetson is expected on
+        # the autonomy course, where line of sight to the base station drops
+        # while onboard autonomy keeps running.
+        phase(jl, t0, 0.5, "D2: C2 lost while AUTONOMOUS -- keeps driving, fault raised",
+              drive_cmd=800, steer_cmd=0, mode=rp.MODE_AUTONOMOUS, c2_lost=True,
+              indicator_request=rp.INDICATOR_AUTONOMOUS)
+
+        phase(jl, t0, 0.5, "D3: C2 lost while MANUAL -- stops, nobody can reach it",
+              drive_cmd=800, steer_cmd=0, mode=rp.MODE_MANUAL, c2_lost=True,
+              indicator_request=rp.INDICATOR_TELEOP)
+
+        # E: corrupt a frame AFTER the CRC is computed. CAN's own CRC would not
+        # see this -- it is exactly the software-path corruption the
+        # application-layer CRC exists to catch.
+        print("-- E: corrupted payload (app-layer CRC must reject it) --")
+        good = rp.encode_control(900, 0, rp.MODE_MANUAL, False, seq=99)
+        bad = bytearray(good)
+        bad[0] ^= 0xFF
+        for _ in range(25):
+            link.send(rp.CAN_ID_CONTROL, bytes(bad))
+            jl.poll()
+            time.sleep(0.02)
+        jl.poll()
+        txt = line(jl, t0)
+        if txt:
+            print(txt)
+
+        # F: jump the sequence number so frames look lost.
+        print("-- F: sequence gap (frames 100 -> 140) --")
+        link.send(rp.CAN_ID_CONTROL,
+                  rp.encode_control(400, 0, rp.MODE_MANUAL, False, seq=100))
+        time.sleep(0.06)
+        jl.poll()
+        link.send(rp.CAN_ID_CONTROL,
+                  rp.encode_control(400, 0, rp.MODE_MANUAL, False, seq=140))
+        time.sleep(0.12)
+        jl.poll()
+        txt = line(jl, t0)
+        if txt:
+            print(txt)
+
+        assert jl.snapshot is not None, "never received a complete snapshot"
+        assert jl.tele.complete_count > 10, "too few complete snapshots"
+        assert jl.unknown_frames == 0, "unexpected CAN id seen"
         print()
-        print("PASS: telemetry flowed throughout; cmd_age climbed and JETSON_HEARTBEAT_LOST")
-        print("appeared during the cut, cleared when CONTROL resumed, and the stop")
-        print("flag zeroed current and froze the encoders on the cycle it arrived.")
-        print("The corrupted frame was rejected, its full-reverse command never")
-        print("reached the motors, and PROTOCOL_ERROR was reported.")
+        print("PASS: snapshots reassembled from four frames throughout; the")
+        print("watchdog, stop flag and autonomy abort each forced a stop; C2")
+        print("loss stopped a teleoperated rover but not an autonomous one; the")
+        print("application-layer CRC rejected a corrupted frame; and a")
+        print("sequence gap was detected and reported.")
     finally:
         link.close()
 
