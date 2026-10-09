@@ -56,7 +56,7 @@ using namespace rover;
 // wiring stays here.
 // ---------------------------------------------------------------------------
 
-static const int      LED_PIN            = 13;       // Teensy onboard LED
+static const int LED_PIN = 13;   // Teensy onboard LED
 
 // Flip to false once real encoders / current sensing / steering feedback are
 // wired in. See readSensors() for where the real code goes.

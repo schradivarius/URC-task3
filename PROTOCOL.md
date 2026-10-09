@@ -263,7 +263,8 @@ every decoder validates:
 1. **DLC** — a mismatch is the cheap signal that a peer is on a different
    protocol version.
 2. **`mode`** — an undefined value is the same class of error (section 3.1).
-3. **`drive_cmd` / `steer_cmd`** — outside ±1000 is the same class of error
+3. **`indicator_request`** — likewise for a value outside the defined set.
+4. **`drive_cmd` / `steer_cmd`** — outside ±1000 is the same class of error
    again (section 3.1).
 
 Critically, a rejected frame **does not refresh the command watchdog**, or a
