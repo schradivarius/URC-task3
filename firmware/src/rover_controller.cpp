@@ -173,7 +173,13 @@ uint8_t RoverController::jetsonLinkState() const {
 
 uint8_t RoverController::c2LinkState() const {
     // Never derived from the Jetson link -- only ever reported. Two different
-    // reasons to say "not reported", and neither may read as LINK_OK:
+    // reasons to say "not reported", and neither may read as LINK_OK.
+    //
+    // This body is what a controller-side radio replaces; see the header and
+    // PROTOCOL.md 3.5.2. A locally measured link cannot go stale, so the
+    // second case below collapses into the first once that lands -- but only
+    // for the local reading. A forwarded bit kept as a cross-check is still
+    // stale-able and still needs this rule.
     if (!have_control_)    return LINK_NOT_REPORTED;  // nobody has told us
     if (watchdogTripped()) return LINK_NOT_REPORTED;  // what we were told is stale
     return last_control_.c2_lost ? LINK_LOST : LINK_OK;

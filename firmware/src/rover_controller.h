@@ -111,6 +111,16 @@ public:
     // Jetson link: the controller has no radio and cannot observe C2 at all,
     // so this is only ever the c2_lost bit the Jetson forwarded.
     //
+    // PLACEHOLDER FOR THE PLANNED CONTROLLER-SIDE RADIO: this function is the
+    // single swap point. c2_link is already a locally-measurable enum in a
+    // byte of its own -- jetson_link beside it is measured locally using the
+    // same four values -- so measuring C2 here instead of taking it from the
+    // wire changes no byte of any frame. Read PROTOCOL.md 3.5.2 first: the
+    // three open questions are policy, not format, and the debounce one is
+    // the one that bites. A raw local reading has none of the smoothing
+    // C2Monitor applies on the Jetson today, so marginal RF would stop and
+    // release a MANUAL rover repeatedly.
+    //
     // It goes LINK_NOT_REPORTED in two cases, both of them honest "we do not
     // know" rather than a misleading LINK_OK:
     //   * no valid CONTROL frame has ever arrived -- nobody has told us;

@@ -330,6 +330,56 @@ simply never transmits a value it cannot vouch for, so there is nothing for a
 receiver to remember and nothing to get wrong. `LINK_NOT_REPORTED` is the
 on-the-wire spelling of what `C2_UNKNOWN` used to mean.
 
+#### 3.5.2 Placeholder: when the MCU gets its own radio
+
+A radio on the controller is planned. **It changes no byte of either packet.**
+`c2_link` is already a four-value enum in a byte of its own, and `jetson_link`
+right beside it is already a *locally measured* link using those same four
+values — so a `c2_link` that the controller measures for itself fits the field
+exactly as a forwarded one does. `RoverController::c2LinkState()` is the single
+swap point, and the table above is its current body. Nothing above it in §3.5
+and nothing in §2.2 moves.
+
+The Jetson-side seam already exists too: `host/c2_link.py` is written against
+`is_connected()` / `recv()`, so a real radio drops in behind that interface
+without touching `jetson_test.py`.
+
+What the radio does change is three decisions nobody has made yet. They are
+*policy*, not wire format, which is why this is a placeholder rather than a
+field:
+
+1. **Which observer decides the stop?** Two observers of one link disagree
+   sooner or later. The controller's own measurement is both fresh and local,
+   so it should win; the Jetson's forwarded `c2_lost` then becomes a
+   cross-check rather than the source. Keep forwarding it — see (2).
+2. **What does a disagreement mean?** It is information neither observer has
+   alone. If the controller hears the base station and the Jetson does not, the
+   *Jetson's* radio or software is broken, not the link. If the Jetson hears it
+   and the controller does not, the controller's receiver is. Either is worth a
+   fault bit from the reserved `0x0400`–`0x8000` range. **Do not pick the
+   number until someone is building it** — v0.4 reserved `0x0080` for work that
+   had not started, and reconciling that reservation is most of what v0.5 was.
+3. **What is the debounce?** This is the one that will bite. Today the stop
+   decision rests on a bit the Jetson has *already smoothed* — `C2Monitor`
+   waits a full `C2_timeout_s` (1.0 s) before declaring loss. A raw local
+   measurement polled at 20 Hz has no such smoothing, so marginal RF would stop
+   and release a `MANUAL` rover over and over. Whatever feeds `c2LinkState()`
+   locally needs its own hold-off; `LINK_DEGRADED_HOLD_MS` is the existing
+   precedent in this file and 1.0 s is the number the Jetson already uses.
+
+Note also that the **staleness rule's scope shrinks but does not vanish.** A
+link the controller measures itself cannot go stale — it owns both the receiver
+and the clock — so for that value `LINK_NOT_REPORTED` falls back to meaning
+only "no reading yet", the boot case. But a forwarded bit kept as a cross-check
+is still stale-able, and the rule above still governs it.
+
+**First, establish which radio this is.** If it is a second path to the base
+station, everything above applies. If it is a dedicated e-stop or RC-override
+receiver, it is *not* `c2_link` at all: it is a third link needing its own
+field, and almost certainly its own frame in the reserved `0x000`–`0x0FF`
+block, which is empty for exactly this purpose (§2.1). The two readings lead to
+different code, so the question is worth settling before anyone writes any.
+
 **Controller health enum** (`controller_health`): `0=OK, 1=DEGRADED,
 2=FAULT, 3=NOT_REPORTED`. Currently always `NOT_REPORTED` — no motor-driver
 telemetry is wired up yet.
@@ -612,6 +662,15 @@ Verified to fail on an injected endianness change.
   `setMotorOutputs()` in `rover_firmware.ino`.
 - **`SRC_SRSR` watchdog bit mask is unverified on hardware.** It fails safe,
   but confirm it by deliberately hanging the loop once on the bench.
+- **A controller-side radio is planned, and the packets are ready for it.**
+  `c2_link` is a locally-measurable enum in its own byte, so the swap is
+  `c2LinkState()` and nothing else — no wire change (§3.5.2). Three open
+  policy questions go with it: which observer decides the stop, what a
+  disagreement between the two observers means (and which reserved fault bit
+  it gets, once someone is actually building it), and what the debounce is,
+  since a raw local reading has none of the smoothing `C2Monitor` applies
+  today. Settle first whether this radio is a second path to the base station
+  or a dedicated e-stop receiver — the latter is a third link, not this field.
 - **Not yet used:** CAN FD, the second and third CAN buses, and a dedicated
   high-priority e-stop frame in the reserved `0x000`–`0x0FF` block.
 - **Mode names are being revised in parallel.**
