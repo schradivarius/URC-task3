@@ -19,6 +19,11 @@ WATCHDOG_TIMEOUT_MS = 300     # controller stops after this long without CONTROL
 TELEMETRY_PERIOD_MS = 50      # 20 Hz
 CONTROL_RATE_HZ = 20          # Jetson-side send rate
 LINK_TIMEOUT_S = 0.5          # Jetson-side, informational only
+# No base-station heartbeat for this long sets c2_lost. Deliberately longer
+# than WATCHDOG_TIMEOUT_MS: a radio drops packets far more often than a CAN
+# bus, so the two must not share a threshold. Jetson-side only -- the rover's
+# own safety never depends on it.
+C2_TIMEOUT_S = 1.0
 
 # --- CAN identifiers (also the bus priority: lowest id wins arbitration) ---
 CAN_ID_CONTROL      = 0x100

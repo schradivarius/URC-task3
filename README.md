@@ -27,7 +27,7 @@ than mocking them, so there is no dependency to manage.
 git clone https://github.com/schradivarius/URC-task3.git
 cd URC-task3
 
-make test     # 50 C++ tests + 32 host tests
+make test     # 50 C++ tests + 35 host tests
 make demo     # no-hardware message-exchange demonstration
 ```
 
@@ -58,7 +58,7 @@ tools/
   golden_vectors.cpp           emits vectors for cross-language pinning
 
 tests/cpp/                   50 tests — firmware core
-tests/host/                  32 tests — config sync, golden vectors, integration
+tests/host/                  35 tests — config sync, golden vectors, integration
 ```
 
 The two files under `firmware/src/` have **no Arduino dependency and no
@@ -80,9 +80,9 @@ make test-host   # host side only — compiles the C++ core
 |---|---:|---|
 | `tests/cpp/test_protocol.cpp` | 17 | Does the wire format encode and decode correctly? |
 | `tests/cpp/test_controller.cpp` | 33 | **Does the rover stop when it should?** |
-| `tests/host/test_config_sync.py` | 6 | Do the C++ and Python configs hold the same constants? |
+| `tests/host/test_config_sync.py` | 9 | Do the C++ and Python configs hold the same constants? |
 | `tests/host/test_golden_vectors.py` | 9 | Do C++ and Python agree byte-for-byte? |
-| `tests/host/test_integration.py` | 15 | Do both ends actually talk to each other? |
+| `tests/host/test_integration.py` | 17 | Do both ends actually talk to each other? |
 
 Every test is named for the failure it prevents, so the reason it exists
 outlives anyone's memory of writing it. **Start a safety review at

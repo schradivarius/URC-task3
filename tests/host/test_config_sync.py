@@ -18,6 +18,7 @@ import unittest
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(REPO, "host"))
 
+import c2_link  # noqa: E402
 import rover_config as cfg  # noqa: E402
 import rover_protocol as rp  # noqa: E402
 
@@ -90,6 +91,23 @@ class TestConfigSync(unittest.TestCase):
     def test_watchdog_tolerates_a_missed_control_frame(self):
         # The controller must not stop the rover over a single late frame.
         self.assertGreater(cfg.WATCHDOG_TIMEOUT_MS, 2 * 1000 // cfg.CONTROL_RATE_HZ)
+
+    def test_firmware_only_constants_are_in_the_config_header(self):
+        # These have no Python counterpart, so the comparison above cannot
+        # catch them drifting back out into rover_firmware.ino.
+        for name in ("HW_WATCHDOG_MS", "OVER_CURRENT_CA"):
+            self.assertIn(name, self.cpp,
+                          "%s belongs in rover_config.h" % name)
+
+    def test_c2_timeout_is_longer_than_the_command_watchdog(self):
+        # A radio drops packets far more often than a CAN bus, so the C2
+        # timeout must not be as tight as the command watchdog. If these ever
+        # converge, a single radio hiccup starts stopping the rover in MANUAL.
+        self.assertGreater(cfg.C2_TIMEOUT_S * 1000, cfg.WATCHDOG_TIMEOUT_MS)
+
+    def test_c2_monitor_defaults_to_the_configured_timeout(self):
+        # The constant is worthless if the only caller hardcodes its own.
+        self.assertEqual(c2_link.C2Monitor().C2_timeout_s, cfg.C2_TIMEOUT_S)
 
 
 if __name__ == "__main__":

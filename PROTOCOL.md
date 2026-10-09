@@ -355,7 +355,8 @@ than on the rover.
 | `HW_WATCHDOG_MS` | 1000 | Teensy reset if the loop stalls (C++ only) |
 | `CONTROL_RATE_HZ` (Jetson) | 20 (50 ms) | Required heartbeat rate. Jetson must send CONTROL continuously, even when idle (drive=0). Python only |
 | `LINK_TIMEOUT_S` (Jetson) | 0.5 | Informational only. Python only |
-| `C2_timeout_s` (Jetson, `C2Monitor`) | 1.0 | Initial design value for testing. No base-station heartbeat for this long sets `c2_lost`. Longer than the 300 ms CAN watchdog because a radio drops packets far more often than a CAN bus. Tunable, and the base-station heartbeat rate is not yet defined. |
+| `C2_TIMEOUT_S` (Jetson, `C2Monitor`) | 1.0 | Initial design value for testing. No base-station heartbeat for this long sets `c2_lost`. Longer than the 300 ms CAN watchdog because a radio drops packets far more often than a CAN bus. Tunable, and the base-station heartbeat rate is not yet defined. |
+| `OVER_CURRENT_CA` | 4000 | 40.00 A, placeholder (C++ only; nothing Jetson-side needs it) |
 | `CAN_ID_*` | `0x100`, `0x200`, `0x201` | Section 2.1 |
 | `*_DLC` | 8, 8, 8 | C++ states them; Python derives them from its struct formats |
 | `MODE_*`, `MODE_MAX` | 0, 1, 2 | Section 3.1 |
@@ -374,7 +375,7 @@ period plus margin. None are derived from measured actuator response yet.
 ## 7. Demonstration and tests — no hardware required
 
 ```
-make test     # 50 C++ tests + 32 host tests
+make test     # 50 C++ tests + 35 host tests
 make demo     # the message-exchange demonstration
 ```
 
@@ -447,7 +448,7 @@ This was verified to fail on an injected endianness change.
 | `host/demo.py` | Jetson | The demonstration in section 7 |
 | `tools/rover_sim.cpp` | dev machine | Simulator: real controller, fake plant |
 | `tools/golden_vectors.cpp` | dev machine | Emits vectors for cross-language pinning |
-| `tests/cpp/`, `tests/host/` | dev machine | 82 tests total |
+| `tests/cpp/`, `tests/host/` | dev machine | 85 tests total |
 
 ### 10.1 Flashing the Teensy 4.1
 

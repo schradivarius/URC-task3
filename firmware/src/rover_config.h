@@ -58,6 +58,12 @@ enum : uint8_t {
 };
 static const uint8_t MODE_MAX = MODE_AUTONOMOUS;   // highest defined mode
 
+// --- Sensor thresholds -----------------------------------------------------
+// Hundredths of an amp, matching TelemetryStatus::current_ca. A placeholder
+// until the real current sensor is characterised, but it belongs here rather
+// than in the .ino: it is a value someone will tune, not board wiring.
+static const int16_t OVER_CURRENT_CA = 4000;   // 40.00 A
+
 // --- Valid command ranges --------------------------------------------------
 // drive_cmd and steer_cmd are tenths of a percent, so +/-1000 is full scale.
 // Anything outside is rejected at decode (see isValidCommand()).
