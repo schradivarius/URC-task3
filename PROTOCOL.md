@@ -199,7 +199,10 @@ heartbeat within `C2_timeout_s`, default 1.0 s) and forwards the verdict in
 every `CONTROL` frame.
 
 **The two link failures are deliberately not equivalent.** C2 loss with a
-healthy Jetson is *expected* on the autonomy course, where line of sight to the
+healthy Jetson is *expected* on the autonomy course. **Rule 1.e.xvi puts it
+there on purpose:** the second route-finding target is *"intentionally placed
+behind the hill out of radio communications line of sight with the C2
+station."* Line of sight to the
 base station drops while onboard autonomy keeps running.
 
 | Mode | `c2_lost = 1` → | Why |
@@ -264,7 +267,7 @@ left. Bits `0x0001`–`0x0040` keep their v0.3 values.
 |---|---|---|
 | `0x0001` | `COMM_TIMEOUT` | No valid CONTROL frame within the watchdog |
 | `0x0002` | `OVER_CURRENT` | Current exceeded a threshold |
-| `0x0004` | `ESTOP_ACTIVE` | Hardware or software e-stop engaged |
+| `0x0004` | `ESTOP_ACTIVE` | A **soft** e-stop is engaged. Deliberately *not* the rules-mandated E-stop — see below |
 | `0x0008` | `ENCODER_FAULT` | Encoder reading invalid or stalled |
 | `0x0010` | `UNDERVOLTAGE` | Supply voltage below threshold |
 | `0x0020` | `FIRMWARE_FAULT` | This boot followed a watchdog reset (5.2) |
@@ -279,6 +282,24 @@ contiguous frame arrives, so fixing the sender clears the fault rather than
 leaving it latched and misleading for the rest of the session. `C2_LINK_LOST`
 clears the same way, and also clears when the value behind it goes stale (§3.5)
 rather than asserting a link state the controller can no longer vouch for.
+
+**`ESTOP_ACTIVE` cannot report the E-stop the rules require, and must not be
+read as doing so.** Rule 2.a.v mandates a red push-button E-stop that *"shall
+immediately stop the rover's movement and cease all power draw from any and all
+batteries... All systems on the rover must have the power switched off by this
+single E-stop."* When that button is pressed the Teensy loses power mid-cycle
+and transmits nothing — there is no frame in which to set a bit. So the
+mandated E-stop is visible to the Jetson only as telemetry stopping dead, and
+this bit can only ever describe some *softer* stop: a commanded software stop,
+or a secondary contactor that cuts the motors while leaving the logic powered.
+Neither exists yet.
+
+The same reasoning applies to the e-stop frame the `0x000`–`0x0FF` block is
+reserved for (§2.1): any CAN frame is necessarily a **soft** stop, because the
+hard one takes the bus down with everything else. That is not an argument
+against the frame — a fast soft stop that leaves the rover diagnosable is worth
+having — but it is not the rules requirement, and nothing here substitutes for
+the button.
 
 ### 3.5 `TELEM_STATE` — `0x203`, DLC 8, 20 Hz
 
@@ -302,8 +323,11 @@ rather than asserting a link state the controller can no longer vouch for.
 
 **The two link fields are independent and must never be collapsed.** The 2027
 autonomy course deliberately includes areas with no C2 line-of-sight while
-onboard autonomy keeps working normally. Treating C2 loss as equivalent to
-Jetson loss would stop the rover exactly where it is supposed to keep going.
+onboard autonomy keeps working normally — rule 1.e.xvi places a scored target
+*"behind the hill out of radio communications line of sight with the C2
+station."* Treating C2 loss as equivalent to Jetson loss would stop the rover
+exactly where the rules require it to keep going, and forfeit the 25 points for
+that target.
 
 `jetson_link` the controller measures for itself, from the command watchdog and
 from sequence gaps or CRC errors seen within the last `LINK_DEGRADED_HOLD_MS`.
@@ -386,10 +410,15 @@ telemetry is wired up yet.
 
 #### 3.5.1 The status indicator, and why request and state are two fields
 
-URC requires a status light, and scores it on what the rover is **actually
-doing**: **red = autonomous operation, blue = teleoperation, flashing green =
-successful arrival**. The enum is named for the meanings rather than the
-colours, because the colour is a wiring decision and the meaning is not:
+**URC rule 1.e.ii** (2027): *"There must be an LED indicator on the back of the
+rover, visible in bright daylight (e.g. LED array or high power LED), that will
+signal: Red: Autonomous operation / Blue: Teleoperation (Manually driving) /
+Flashing Green: Successful arrival at a target."*
+
+The light is scored on what the rover is **actually doing**, which is why the
+controller's own mode overrides the Jetson's request below. The enum is named
+for the meanings rather than the colours, because the colour is a wiring
+decision and the meaning is not:
 
 | Value | Name | URC colour | Meaning |
 |---|---|---|---|
@@ -399,19 +428,30 @@ colours, because the colour is a wiring decision and the meaning is not:
 | 3 | `INDICATOR_ARRIVED` | flashing green | Autonomous arrival at a target |
 | 4 | `INDICATOR_FAULT` | **yellow** (placeholder) | Nothing is driving this rover |
 
-**`INDICATOR_FAULT` is yellow for now, as a placeholder.** The binding
-constraint is that it must not be mistakable for one of the three scored
-states, so it cannot be red, blue or flashing green; yellow satisfies that, is
-the conventional "something is wrong" colour, and on an RGB LED costs nothing
-(red + green). Solid rather than flashing, deliberately: the scheme already
-spends *flashing* on arrival, and a second flashing state would leave the
-distinction resting on hue-while-blinking, which is the hardest thing to read
-at distance or on video.
+**`INDICATOR_FAULT` is yellow, and the rules permit it.** 1.e.ii is a *minimum
+signalling requirement* — it says what the indicator must signal, and attaches
+no exclusivity: there is no "and no other colour" clause and no prohibition on
+additional states. So a fourth indication is allowed. `INDICATOR_OFF` is the
+same case. Yellow is the conventional "something is wrong" colour, cannot be
+confused with any of the three mandated states, and on an RGB LED costs nothing
+(red + green).
 
-Still open, and the thing that could override the choice: whether the URC
-rules actually permit a fourth indication at all, or require that nothing be
-confusable with the three mandated states. That is a question for the rules
-document, not for this file (§9).
+**Solid rather than flashing**, deliberately, and 1.e.xvii is why it matters:
+arrival is scored on *"autonomously stopping within 1m of the target location
+**and indicating its arrival**"*, so the flashing green is itself part of a
+25-point criterion. A second flashing state would compete with a points-bearing
+signal and leave the two distinguished by hue-while-blinking, which is the
+hardest thing to read at distance or on competition video.
+
+Two hardware constraints come from 1.e.ii directly and are easy to miss,
+because neither is about colour:
+
+- **On the back of the rover.** A placement requirement, not a suggestion.
+- **Visible in bright daylight**, with *"LED array or high power LED"* given as
+  the means. Every event runs in full daylight (3.d), so an indicator panel
+  sized for an indoor bench test will not satisfy this.
+
+Both are on the hardware item in §9, which is where the wiring work is tracked.
 
 **The two fields differ on purpose.** The controller knows its own mode, so the
 Jetson's request is honoured only where it agrees with that mode; otherwise the
@@ -657,28 +697,60 @@ Verified to fail on an injected endianness change.
   makes cheap.
 - **`controller_health` is always `NOT_REPORTED`** — no motor-driver telemetry
   is wired up. On a CAN bus that arrives as the drivers' own messages.
-- **`INDICATOR_FAULT` is yellow as a placeholder** (§3.5.1). It satisfies the
-  one hard constraint — not confusable with the three scored states — but
-  nobody has confirmed against the URC rules document whether a fourth
-  indication is permitted at all, or whether the rules require that nothing
-  else be confusable with the mandated three. Check that before ordering
-  hardware; it could override the choice outright.
-- **Nothing drives the status light yet.** The chain stops at telemetry: the
-  protocol defines the states, `indicatorState()` decides which one applies,
-  `TELEM_STATE` reports it, and there is no pin assignment and no driver. The
-  only LED in `rover_firmware.ino` is `LED_PIN = 13`, the Teensy's onboard
-  one, used as a telemetry heartbeat blink and unrelated to the indicator. So
-  `indicator_state` is currently a value the Jetson can read and nobody can
-  see. This is a scored light, so it needs its own item on the hardware list
-  rather than riding along with the `setMotorOutputs()` stub.
+- **`INDICATOR_FAULT` is yellow** (§3.5.1). Checked against the 2027 rules:
+  1.e.ii is a minimum signalling requirement with no exclusivity clause, so a
+  fourth indication is permitted. This one is settled, not open.
+- **Nothing drives the status light yet, and this is a scoring risk rather
+  than a TODO.** The chain stops at telemetry: the protocol defines the
+  states, `indicatorState()` decides which applies, `TELEM_STATE` reports it,
+  and there is no pin assignment and no driver. The only LED in
+  `rover_firmware.ino` is `LED_PIN = 13`, the Teensy's onboard one, used as a
+  telemetry heartbeat blink and unrelated to the indicator. So
+  `indicator_state` is a value the Jetson can read and nobody can see.
+  Rule 1.e.xvii scores a target as reached only on *"autonomously stopping
+  within 1m of the target location **and indicating its arrival**"* — 25
+  points per target — so the missing output costs points directly, not just
+  compliance. It also has two constraints that are easy to miss because
+  neither is about colour: the indicator must be **on the back of the rover**
+  and **visible in bright daylight** (1.e.ii suggests an LED array or
+  high-power LED; every event runs in full daylight). Its own hardware item,
+  not part of the `setMotorOutputs()` stub.
 - **`drive_cmd` / `steer_cmd` are not range-checked on decode.** The ±1000
   range is a contract, not an enforced one: the decoder accepts any int16 and
   the motor layer owns clamping. [PR #16](https://github.com/schradivarius/URC-task3/pull/16)
   adds command-range validation and is the right place to change that.
-- **`return_request` has no controller-side behaviour.** Carried and reported
-  only.
-- **`autonomy_abort` stopping an autonomous rover is a judgement call** — see
-  3.1.2. Flagged for review.
+- **`autonomy_abort` and `return_request` need a decision against the scoring
+  rules, and the current behaviour is probably not it.** v0.4 flagged
+  `autonomy_abort` forcing a stop as a judgement call the brief did not spell
+  out. The 2027 rules do spell out the surrounding scoring, and reading 1.e.xi
+  and 1.e.xviii together they define **three** operator actions, not two:
+
+  | Operator action | Penalty | Who drives |
+  |---|---|---|
+  | Signal the rover to **stop** | 20% of that task | nobody |
+  | Signal it to **autonomously return** (to the astronaut, or back the way it came) | 20% of that task | the rover, still autonomous |
+  | **Teleoperate** back to a previously visited location | 50% of that task | the operator |
+
+  Penalties for leaving autonomous mode cap at 50%, so once a team has taken
+  the teleoperation hit on a task, further aborts are free.
+
+  Two consequences worth a decision:
+
+  1. **`return_request` doing nothing is the real gap.** The autonomous return
+     is a 20% option; teleoperating back is 50%. A rover that cannot return
+     under its own control leaves only the 50% route, so the field that
+     currently has no behaviour is the one guarding 30 percentage points per
+     task.
+  2. **`autonomy_abort` forcing a stop makes it close to a duplicate of
+     `stop`**, differing only in being ignored outside `AUTONOMOUS`. If abort
+     is meant to be the "stop autonomy but stay able to return" signal, then
+     stopping the wheels is the wrong action and `return_request` should be
+     what moves.
+
+  Both are above the protocol: the fields, their bits and their meanings are
+  fixed either way, and this is about what the controller and the autonomy
+  stack *do* with them. Left as-is pending that call, because changing
+  `effectiveStop()` changes safety behaviour.
 - **Motor and sensor I/O is stubbed** behind `readSensors()` and
   `setMotorOutputs()` in `rover_firmware.ino`.
 - **`SRC_SRSR` watchdog bit mask is unverified on hardware.** It fails safe,

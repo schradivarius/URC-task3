@@ -61,8 +61,18 @@ static const int      LED_PIN             = 13;       // Teensy onboard LED
 // yet. RoverController::indicatorState() already decides what it should show
 // and TELEM_STATE reports it, so the whole chain exists except the output --
 // indicator_state is currently a value the Jetson can read and nobody can see.
-// This light is scored, so it is its own hardware item, not part of the
-// setMotorOutputs() stub. Mapping (PROTOCOL.md 3.5.1):
+//
+// This costs POINTS, not just compliance: rule 1.e.xvii scores a target as
+// reached only on "autonomously stopping within 1m of the target location and
+// indicating its arrival", 25 points per target. So it is its own hardware
+// item, not part of the setMotorOutputs() stub.
+//
+// Rule 1.e.ii also constrains the hardware, not only the colours: the
+// indicator must be ON THE BACK of the rover and VISIBLE IN BRIGHT DAYLIGHT
+// (it suggests an LED array or high-power LED). Every event runs in full
+// daylight, so a bench-sized indicator will not pass.
+//
+// Mapping (PROTOCOL.md 3.5.1):
 //   INDICATOR_OFF        off
 //   INDICATOR_TELEOP     blue
 //   INDICATOR_AUTONOMOUS red
