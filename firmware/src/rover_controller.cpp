@@ -138,7 +138,11 @@ bool RoverController::effectiveStop() const {
 }
 
 void RoverController::commandedOutputs(int16_t& drive, int16_t& steer) const {
+    // autonomy abort is almost the same instruction as stop on mcu but hardware and jetson implementations will differ greatly
+    if (last_control_.autonomy_abort && last_control_.mode == MODE_AUTONOMOUS) { drive = 0; steer = 0; mode = MODE_MANUAL; return; }
+  
     if (effectiveStop()) { drive = 0; steer = 0; return; }
+  
     drive = last_control_.drive_cmd;
     steer = last_control_.steer_cmd;
 }
@@ -224,6 +228,10 @@ uint8_t RoverController::indicatorState() const {
     // 4. Autonomous. Only the ARRIVED request matters; anything else is red.
     //    `stop` deliberately does not change the light: a paused autonomous
     //    rover is still under autonomous operation.
+
+    // indicator byte hijacked for returning a confirmation of return_request sent by jetson
+    if (last_control_.return_request) return INDICATOR_ARRIVED;
+  
     if (last_control_.indicator_request == INDICATOR_ARRIVED) return INDICATOR_ARRIVED;
     return INDICATOR_AUTONOMOUS;
 }
