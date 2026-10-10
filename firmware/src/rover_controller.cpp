@@ -143,6 +143,9 @@ bool RoverController::effectiveStop() const {
 }
 
 void RoverController::commandedOutputs(int16_t& drive, int16_t& steer) const {
+    // autonomy abort is almost the same instruction as stop on mcu but hardware and jetson implementations will differ greatly
+    if (last_control_.autonomy_abort && last_control_.mode == MODE_AUTONOMOUS) { drive = 0; steer = 0; last_control_.mode = MODE_MANUAL; return; }
+    if (last_control_.stop) { drive = 0; steer = 0; last_control_.mode = MODE_DISABLED; return; }
     if (effectiveStop()) { drive = 0; steer = 0; return; }
   
     drive = last_control_.drive_cmd;
