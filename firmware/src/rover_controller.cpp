@@ -66,10 +66,6 @@ bool RoverController::ingestFrame(uint32_t can_id, const uint8_t* buf, uint8_t l
             protocol_error_ = true;
         }
       
-        // autonomy abort is almost the same instruction as stop on mcu but hardware and jetson implementations will differ greatly
-        if (last_control_.autonomy_abort && last_control_.mode == MODE_AUTONOMOUS) { drive = 0; steer = 0; last_control_.mode = MODE_MANUAL; return; }
-        if (last_control_.stop) { drive = 0; steer = 0; last_control_.mode = MODE_DISABLED; return; }
-      
         return false;
     }
 
