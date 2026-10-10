@@ -97,6 +97,26 @@ class TestPredicateAgreement(GoldenBase):
             self.assertEqual(p.is_known_indicator(int(value)), known == "1",
                              "is_known_indicator disagrees for %s" % value)
 
+    def test_command_range_agrees_across_languages(self):
+        """Both sides must agree on exactly where the valid drive/steer range
+        ends. A host that sends 1001 thinking it is legal would stop the rover
+        with a PROTOCOL_ERROR it cannot explain."""
+        rows = self.rowsOf("RANGE")
+        self.assertGreater(len(rows), 0, "C++ emitted no RANGE cases")
+        for _, value, valid in rows:
+            self.assertEqual(p.is_valid_command(int(value)), valid == "1",
+                             "is_valid_command disagrees for %s" % value)
+
+    def test_out_of_range_commands_are_rejected_by_the_python_decoder(self):
+        for v in (p.CMD_MIN - 1, p.CMD_MAX + 1, -32768, 32767):
+            for drive, steer in ((v, 0), (0, v)):
+                frame = p.encode_control(drive, steer, p.MODE_MANUAL, False)
+                self.assertEqual(p.decode_control(frame)[0], p.DECODE_BAD_RANGE,
+                                 "Python accepted %d,%d" % (drive, steer))
+        for v in (p.CMD_MIN, 0, p.CMD_MAX):
+            frame = p.encode_control(v, v, p.MODE_MANUAL, False)
+            self.assertEqual(p.decode_control(frame)[0], p.DECODE_OK)
+
     def test_sequence_arithmetic_agrees_across_the_wrap(self):
         for _, pair, expected in self.rowsOf("SEQDELTA"):
             prev, cur = (int(x) for x in pair.split(","))

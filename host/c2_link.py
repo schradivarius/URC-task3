@@ -1,4 +1,10 @@
+import os
+import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rover_config import C2_TIMEOUT_S  # noqa: E402
+
 
 class SimC2Link:
     def __init__(self):
@@ -20,7 +26,7 @@ class SimC2Link:
         return frames
 
 class C2Monitor:
-    def __init__(self, C2_timeout_s=1.0):
+    def __init__(self, C2_timeout_s=C2_TIMEOUT_S):
         self.C2_timeout_s = C2_timeout_s
         self.last_C2_time_s = 0
         self.have_connection = False

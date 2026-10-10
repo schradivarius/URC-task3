@@ -28,13 +28,8 @@ namespace rover {
 // instead of with sleeps.
 typedef uint32_t (*MillisFn)();
 
-static const uint32_t DEFAULT_WATCHDOG_TIMEOUT_MS = 300;
-static const uint32_t DEFAULT_TELEMETRY_PERIOD_MS = 50;   // 20 Hz
-
-// How long a link-quality complaint (a sequence gap or a CRC error) keeps the
-// Jetson link reported as DEGRADED after the last occurrence. Long enough that
-// an operator actually sees it on a dashboard refreshing at 20 Hz.
-static const uint32_t LINK_DEGRADED_HOLD_MS = 1000;
+// DEFAULT_WATCHDOG_TIMEOUT_MS, DEFAULT_TELEMETRY_PERIOD_MS and
+// LINK_DEGRADED_HOLD_MS come from rover_config.h (via rover_protocol.h).
 
 class RoverController {
 public:
@@ -44,8 +39,8 @@ public:
 
     // Feed one received CAN frame. Returns true only if it was a CONTROL frame
     // that fully validated (right id, right DLC, good CRC, known mode, clean
-    // flags). Anything else is ignored and -- critically -- does NOT refresh
-    // the command watchdog.
+    // flags, drive/steer within CMD_MIN..CMD_MAX). Anything else is ignored
+    // and -- critically -- does NOT refresh the command watchdog.
     bool ingestFrame(uint32_t can_id, const uint8_t* buf, uint8_t len);
 
     // --- safety ----------------------------------------------------------

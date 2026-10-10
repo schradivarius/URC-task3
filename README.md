@@ -27,7 +27,7 @@ than mocking them, so there is no dependency to manage.
 git clone https://github.com/schradivarius/URC-task3.git
 cd URC-task3
 
-make test     # 68 C++ tests + 43 host tests
+make test     # 74 C++ tests + 57 host tests
 make demo     # no-hardware message-exchange demonstration
 ```
 
@@ -42,10 +42,12 @@ Two languages, because the two ends of the link are different machines:
 ```
 firmware/                    C++ — runs on the Teensy 4.1
   rover_firmware.ino           hardware wiring ONLY (CAN, watchdog, pins)
-  src/rover_protocol.*         message definitions + codec   ─┐ pure C++,
-  src/rover_controller.*       command/safety state machine  ─┘ no Arduino
+  src/rover_config.h           every protocol + timing constant ─┐
+  src/rover_protocol.*         message definitions + codec      ─┤ pure C++,
+  src/rover_controller.*       command/safety state machine     ─┘ no Arduino
 
 host/                        Python — runs on the Jetson
+  rover_config.py              constants (pinned to rover_config.h)
   rover_protocol.py            codec (pinned to the C++ one)
   can_link.py                  sim + python-can backends
   c2_link.py                   C2 (base-station) link-loss detection
@@ -56,8 +58,8 @@ tools/
   rover_sim.cpp                simulator: REAL controller, fake plant
   golden_vectors.cpp           emits vectors for cross-language pinning
 
-tests/cpp/                   68 tests — firmware core
-tests/host/                  43 tests — golden vectors + integration
+tests/cpp/                   74 tests — firmware core
+tests/host/                  57 tests — config sync, golden vectors, integration
 ```
 
 The two files under `firmware/src/` have **no Arduino dependency and no
@@ -77,9 +79,10 @@ make test-host   # host side only — compiles the C++ core
 
 | Suite | Tests | Answers |
 |---|---:|---|
-| `tests/cpp/test_protocol.cpp` | 31 | Wire format, CRC-8, and every validation predicate |
-| `tests/cpp/test_controller.cpp` | 37 | **Does the rover stop when it should?** |
-| `tests/host/test_golden_vectors.py` | 21 | Do C++ and Python agree byte-for-byte? |
+| `tests/cpp/test_protocol.cpp` | 34 | Wire format, CRC-8, and every validation predicate |
+| `tests/cpp/test_controller.cpp` | 40 | **Does the rover stop when it should?** |
+| `tests/host/test_config_sync.py` | 12 | Do the C++ and Python configs hold the same constants? |
+| `tests/host/test_golden_vectors.py` | 23 | Do C++ and Python agree byte-for-byte? |
 | `tests/host/test_integration.py` | 22 | Do both ends actually talk to each other? |
 
 Every test is named for the failure it prevents, so the reason it exists

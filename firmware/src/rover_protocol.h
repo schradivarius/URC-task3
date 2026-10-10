@@ -51,45 +51,22 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// CAN ids, frame sizes, modes, valid command ranges, timing and the sensor
+// thresholds all live in rover_config.h, so there is one place to change
+// them. What stays below is what a message MEANS: flag layout, fault bits,
+// indicator and link codes, the CRC, the structs.
+#include "rover_config.h"
+
 namespace rover {
 
-// ---------------------------------------------------------------------------
-// CAN identifiers.
-//
-// On CAN the identifier is ALSO the priority: arbitration is bitwise and
-// dominant-low, so the numerically lowest id wins the bus and the loser backs
-// off without its message being corrupted. This table is a priority ordering.
-//
-// 0x000-0x0FF stays free above CONTROL for a future dedicated e-stop frame,
-// which must outrank everything here.
-// ---------------------------------------------------------------------------
-
-enum : uint32_t {
-    CAN_ID_CONTROL       = 0x100,  // Jetson -> Teensy. Highest priority in use.
-
-    // Telemetry, Teensy -> Jetson. Four frames because each must fit Classic
-    // CAN's 8 bytes once the per-frame sequence number and CRC are accounted
-    // for, leaving 6 payload bytes each.
-    //
-    // SNAPSHOT TEARING: every frame of one control cycle carries the SAME
-    // sequence number. The Jetson can therefore tell whether the four frames
-    // it holds came from one cycle or straddle two, and discard or flag a torn
-    // snapshot rather than silently mixing a fresh encoder reading with a
-    // stale fault word. A single CAN FD frame would be atomic and avoid this
-    // entirely; that is the main argument for moving telemetry to CAN3 in FD
-    // mode later, and the field definitions below would not change.
-    CAN_ID_TELEM_DRIVE_L = 0x200,  // left encoder + steering feedback
-    CAN_ID_TELEM_DRIVE_R = 0x201,  // right encoder + command age
-    CAN_ID_TELEM_POWER   = 0x202,  // current, voltage, fault word
-    CAN_ID_TELEM_STATE   = 0x203,  // mode, link health, controller health
-};
-
-// Operating modes (ControlMsg::mode)
-enum : uint8_t {
-    MODE_DISABLED   = 0,
-    MODE_MANUAL     = 1,
-    MODE_AUTONOMOUS = 2,
-};
+// SNAPSHOT TEARING, on the four telemetry ids in rover_config.h: every frame
+// of one control cycle carries the SAME sequence number. The Jetson can
+// therefore tell whether the four frames it holds came from one cycle or
+// straddle two, and discard or flag a torn snapshot rather than silently
+// mixing a fresh encoder reading with a stale fault word. A single CAN FD
+// frame would be atomic and avoid this entirely; that is the main argument
+// for moving telemetry to CAN3 in FD mode later, and the field definitions
+// below would not change.
 
 // ---------------------------------------------------------------------------
 // CONTROL flags byte (ControlMsg::flags, wire byte 5).
@@ -189,20 +166,32 @@ enum : uint16_t {
     CMD_AGE_MAX     = 0xFFFE,
 };
 
-// Every frame is 8 bytes: 6 payload + 1 sequence + 1 CRC.
-enum : uint8_t {
-    FRAME_DLC        = 8,
-    FRAME_PAYLOAD    = 6,  // bytes 0..5
-    FRAME_SEQ_OFFSET = 6,
-    FRAME_CRC_OFFSET = 7,
-};
-
 static const int32_t INT32_MIN_V = -2147483647 - 1;
 static const int32_t INT32_MAX_V = 2147483647;
 
 bool isKnownMode(uint8_t mode);
 bool modePermitsMotion(uint8_t mode);
 bool isKnownIndicator(uint8_t indicator);
+
+// ---------------------------------------------------------------------------
+// Command range validation.
+//
+// drive_cmd and steer_cmd are int16 on the wire, so they can carry
+// -32768..32767 while only CMD_MIN..CMD_MAX (+/-1000, i.e. +/-100.0%) means
+// anything. A value outside that range is not "more than full throttle" --
+// it is a sender that disagrees with us about the scale or the layout, the
+// same class of fault as an undefined mode or a reserved flag bit. So
+// decodeControl() rejects the whole frame (DECODE_BAD_RANGE) rather than
+// clamping it: clamping would quietly turn a misunderstood command into full
+// throttle, and a rejected frame does not refresh the command watchdog, so
+// the rover stops and the controller reports FAULT_PROTOCOL_ERROR.
+//
+// The motor layer still clamps its own outputs. That is a different job: it
+// protects the hardware from a command we understood, while this protects the
+// rover from a command we did not.
+// ---------------------------------------------------------------------------
+
+bool isValidCommand(int16_t value);
 
 // ---------------------------------------------------------------------------
 // CRC-8 / SAE-J1850 -- poly 0x1D, init 0xFF, no reflection, final XOR 0xFF.
@@ -319,6 +308,7 @@ enum DecodeResult : uint8_t {
     DECODE_BAD_MODE,       // mode value this firmware does not define
     DECODE_BAD_FLAGS,      // reserved flag bits were set
     DECODE_BAD_INDICATOR,  // indicator request out of range
+    DECODE_BAD_RANGE,      // drive_cmd or steer_cmd outside CMD_MIN..CMD_MAX
 };
 
 const char* decodeResultName(DecodeResult r);

@@ -156,8 +156,8 @@ would only add a staleness question nobody needs to ask.
 
 | Byte | Field | Type | Units | Valid range | Meaning |
 |---|---|---|---|---|---|
-| 0–1 | `drive_cmd` | int16 | 0.1 % of full drive effort | −1000 … +1000 | Desired drive. Positive is forward. Values outside the range are **not** clamped by the protocol; the motor layer owns that. |
-| 2–3 | `steer_cmd` | int16 | 0.1 % of full steering range | −1000 … +1000 | Desired steering. Positive is right. |
+| 0–1 | `drive_cmd` | int16 | 0.1 % of full drive effort | −1000 … +1000 | Desired drive. Positive is forward. A value outside the range **rejects the whole frame** — see 3.1.4. |
+| 2–3 | `steer_cmd` | int16 | 0.1 % of full steering range | −1000 … +1000 | Desired steering. Positive is right. Range-checked exactly like `drive_cmd`. |
 | 4 | `mode` | uint8 | enum | **0, 1, 2 only** | `0=DISABLED, 1=MANUAL, 2=AUTONOMOUS`. Any other value **rejects the frame** — see 3.1.1. |
 | 5 | `flags` | uint8 | bitfield | see below | Five fields packed; see 3.1.2. |
 | 6 | `seq` | uint8 | frames | 0–255 wraps | See 2.2. |
@@ -228,6 +228,27 @@ Two implementation details that exist to stop this field lying:
   `LINK_NOT_REPORTED` until a real frame arrives, so the boot default cannot
   masquerade as forwarded state.
 
+#### 3.1.4 `drive_cmd` / `steer_cmd` range validation
+
+Both fields are int16 on the wire, so they can carry −32768…+32767 while only
+−1000…+1000 means anything. A value outside that range is **not** "more than
+full throttle" — it is a sender that disagrees with us about the scale or the
+layout, the same class of fault as an undefined `mode` or a set reserved bit.
+
+So the decoder **rejects the whole frame** (`DECODE_BAD_RANGE`) rather than
+clamping it. Clamping is the dangerous option: it would quietly turn a
+misunderstood command into full throttle. Rejecting is safe, because a rejected
+frame does not refresh the command watchdog — the rover stops, and
+`PROTOCOL_ERROR` says why (§4.2).
+
+This does **not** replace clamping in the motor layer. That is a different job:
+the motor layer protects the hardware from a command we understood, while this
+protects the rover from a command we did not.
+
+±1000 is full scale and **legal** — off by one here is the whole bug, so the
+boundary is pinned on both sides by the `RANGE` table in
+`tools/golden_vectors.cpp`.
+
 ### 3.2 `TELEM_DRIVE_L` — `0x200`, DLC 8, 20 Hz
 
 | Byte | Field | Type | Units | Valid range | Meaning |
@@ -271,7 +292,7 @@ left. Bits `0x0001`–`0x0040` keep their v0.3 values.
 | `0x0008` | `ENCODER_FAULT` | Encoder reading invalid or stalled |
 | `0x0010` | `UNDERVOLTAGE` | Supply voltage below threshold |
 | `0x0020` | `FIRMWARE_FAULT` | This boot followed a watchdog reset (5.2) |
-| `0x0040` | `PROTOCOL_ERROR` | A frame on our id was uninterpretable: wrong DLC, undefined mode, bad flags or bad indicator |
+| `0x0040` | `PROTOCOL_ERROR` | A frame on our id was uninterpretable: wrong DLC, undefined mode, bad flags, bad indicator, or `drive_cmd`/`steer_cmd` out of range |
 | `0x0080` | `C2_LINK_LOST` | The last `CONTROL` frame reported the base-station link lost (`c2_lost = 1`). Raised in every mode; stops the rover only in `MANUAL` (§3.1.3). Cleared, not latched, once the value goes stale — see §3.5 |
 | `0x0100` | `SEQ_GAP` | CONTROL frames were lost, duplicated or reordered |
 | `0x0200` | `CRC_ERROR` | Application-layer CRC mismatch on our id |
@@ -547,7 +568,8 @@ implemented as another.
 ### 4.2 What a rejected frame does
 
 A frame failing **any** validation — DLC, CRC, undefined `mode`, the reserved
-flag bit set, or an out-of-range `indicator_request` — is discarded and **does
+flag bit set, an out-of-range `indicator_request`, or a `drive_cmd` or
+`steer_cmd` outside ±1000 — is discarded and **does
 not refresh the command watchdog**. Otherwise a node
 on a mismatched protocol version could keep the rover alive while sending
 commands it never understood. The matching fault bit is raised so the
@@ -611,26 +633,56 @@ of 1 rather than a 255-frame loss.
 `millis()` test was verified to *fail* against a naive timestamp-comparison
 implementation. It is a real regression test, not decoration.
 
-## 6. Timing constants
+## 6. Configuration constants
+
+Every value in this section lives in **`firmware/src/rover_config.h`**,
+mirrored by **`host/rover_config.py`** for the ones the Jetson needs.
+`tests/host/test_config_sync.py` fails CI if the two ever disagree, so there is
+one place to change a timeout rather than five.
+
+What belongs there: values someone might tune, or that both ends must agree on.
+What does not: values that describe a message's *contents* — fault bits, flag
+masks, indicator and link codes, the command-age sentinels, the CRC polynomial.
+Changing one of those changes the protocol rather than tuning it, so they stay
+in `rover_protocol.h` beside the structs they describe.
+
+### 6.1 Timing
 
 | Constant | Value | Notes |
 |---|---|---|
-| `CONTROL` rate | 20 Hz | 1 frame per cycle |
+| `CONTROL` rate | 20 Hz | 1 frame per cycle (`CONTROL_RATE_HZ`, Jetson side) |
 | `TELEMETRY` rate | 20 Hz | 4 frames per cycle |
-| `WATCHDOG_TIMEOUT_MS` | 300 | 6× the control period |
-| `TELEMETRY_PERIOD_MS` | 50 | |
+| `WATCHDOG_TIMEOUT_MS` | 300 | 6× the control period. `DEFAULT_WATCHDOG_TIMEOUT_MS` in C++ |
+| `TELEMETRY_PERIOD_MS` | 50 | `DEFAULT_TELEMETRY_PERIOD_MS` in C++ |
 | `LINK_DEGRADED_HOLD_MS` | 1000 | How long a gap or CRC error keeps the link `DEGRADED` |
-| `HW_WATCHDOG_MS` | 1000 | Teensy reset if the loop stalls |
-| `LINK_TIMEOUT_S` (Jetson) | 0.5 | Informational only |
-| `C2_timeout_s` (Jetson, `C2Monitor`) | 1.0 | No base-station heartbeat for this long sets `c2_lost`. Longer than the 300 ms CAN watchdog because a radio drops packets far more often than a CAN bus. Tunable, and the base-station heartbeat rate is not yet defined |
+| `HW_WATCHDOG_MS` | 1000 | Teensy reset if the loop stalls (C++ only) |
+| `LINK_TIMEOUT_S` (Jetson) | 0.5 | Informational only (Python only) |
+| `C2_TIMEOUT_S` (Jetson, `C2Monitor`) | 1.0 | No base-station heartbeat for this long sets `c2_lost`. Longer than the 300 ms CAN watchdog because a radio drops packets far more often than a CAN bus. Tunable, and the base-station heartbeat rate is not yet defined (Python only) |
 
 All placeholders, chosen to sit comfortably above one period plus margin. None
-are derived from measured actuator response yet.
+are derived from measured actuator response yet. Two of the relationships
+between them are load-bearing rather than incidental, and are therefore
+asserted in `test_config_sync.py`: the watchdog must tolerate a missed frame,
+and `C2_TIMEOUT_S` must stay longer than the command watchdog — if those two
+converged, a single radio hiccup would start stopping the rover in `MANUAL`.
+
+### 6.2 Everything else
+
+| Constant | Value | Notes |
+|---|---|---|
+| `PROTOCOL_VERSION` | 5 | Bump when a message's layout or meaning changes. Not sent on the wire; DLC and the CRC are the runtime mismatch signals |
+| `CAN_BITRATE_HZ` | 500000 | Every node on the bus must match |
+| `CAN_ID_*` | `0x100`, `0x200`–`0x203` | §2.1 |
+| `FRAME_DLC`, `FRAME_PAYLOAD` | 8, 6 | Plus `FRAME_SEQ_OFFSET` 6 and `FRAME_CRC_OFFSET` 7 |
+| `MODE_*`, `MODE_MAX` | 0, 1, 2 | §3.1.1 |
+| `CMD_MIN`, `CMD_MAX` | −1000, 1000 | Valid `drive_cmd`/`steer_cmd` range (§3.1.4) |
+| `OVER_CURRENT_CA` | 4000 | 40.00 A, placeholder (C++ only) |
+| `UNDERVOLTAGE_CV` | 2000 | 20.00 V, placeholder (C++ only) |
 
 ## 7. Demonstration and tests — no hardware required
 
 ```
-make test     # 68 C++ tests + 43 host tests
+make test     # 74 C++ tests + 57 host tests
 make demo     # the message-exchange demonstration
 ```
 
@@ -715,10 +767,6 @@ Verified to fail on an injected endianness change.
   and **visible in bright daylight** (1.e.ii suggests an LED array or
   high-power LED; every event runs in full daylight). Its own hardware item,
   not part of the `setMotorOutputs()` stub.
-- **`drive_cmd` / `steer_cmd` are not range-checked on decode.** The ±1000
-  range is a contract, not an enforced one: the decoder accepts any int16 and
-  the motor layer owns clamping. [PR #16](https://github.com/schradivarius/URC-task3/pull/16)
-  adds command-range validation and is the right place to change that.
 - **`autonomy_abort` and `return_request` need a decision against the scoring
   rules, and the current behaviour is probably not it.** v0.4 flagged
   `autonomy_abort` forcing a stop as a judgement call the brief did not spell
@@ -788,7 +836,7 @@ Verified to fail on an injected endianness change.
 | `host/demo.py` | Jetson | The demonstration in section 7 |
 | `tools/rover_sim.cpp` | dev machine | Simulator: real controller, fake plant |
 | `tools/golden_vectors.cpp` | dev machine | Emits vectors for cross-language pinning |
-| `tests/cpp/`, `tests/host/` | dev machine | 111 tests total |
+| `tests/cpp/`, `tests/host/` | dev machine | 131 tests total |
 
 ### 10.1 Flashing the Teensy 4.1
 

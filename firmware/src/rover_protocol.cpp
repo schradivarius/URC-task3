@@ -127,6 +127,10 @@ bool modePermitsMotion(uint8_t mode) {
     return mode == MODE_MANUAL || mode == MODE_AUTONOMOUS;
 }
 
+bool isValidCommand(int16_t value) {
+    return value >= CMD_MIN && value <= CMD_MAX;
+}
+
 bool isKnownIndicator(uint8_t indicator) {
     return indicator <= INDICATOR_FAULT;
 }
@@ -184,6 +188,7 @@ const char* decodeResultName(DecodeResult r) {
         case DECODE_BAD_MODE:      return "BAD_MODE";
         case DECODE_BAD_FLAGS:     return "BAD_FLAGS";
         case DECODE_BAD_INDICATOR: return "BAD_INDICATOR";
+        case DECODE_BAD_RANGE:     return "BAD_RANGE";
     }
     return "UNKNOWN";
 }
@@ -230,8 +235,14 @@ DecodeResult decodeControl(uint32_t can_id, const uint8_t* buf, uint8_t len,
         static_cast<uint8_t>((flags & CTRL_INDICATOR_MASK) >> CTRL_INDICATOR_SHIFT);
     if (!isKnownIndicator(indicator)) return DECODE_BAD_INDICATOR;
 
-    out.drive_cmd        = getI16(buf + 0);
-    out.steer_cmd        = getI16(buf + 2);
+    // Same reasoning for an out-of-range drive or steer: reject, never clamp.
+    // See isValidCommand() in rover_protocol.h.
+    const int16_t drive = getI16(buf + 0);
+    const int16_t steer = getI16(buf + 2);
+    if (!isValidCommand(drive) || !isValidCommand(steer)) return DECODE_BAD_RANGE;
+
+    out.drive_cmd        = drive;
+    out.steer_cmd        = steer;
     out.mode             = mode;
     out.stop             = (flags & CTRL_FLAG_STOP) != 0;
     out.autonomy_abort   = (flags & CTRL_FLAG_AUTONOMY_ABORT) != 0;

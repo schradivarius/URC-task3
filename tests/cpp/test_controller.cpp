@@ -228,6 +228,40 @@ static void foreign_can_id_does_not_refresh_the_watchdog() {
     CHECK_EQ(ctl.lastControl().drive_cmd, 500);     // not overwritten
 }
 
+static void out_of_range_command_never_moves_the_rover() {
+    RoverController ctl = freshController();
+    CHECK(!sendControl(ctl, CMD_MAX + 1, 0, MODE_MANUAL, false));
+    int16_t drive = -1, steer = -1;
+    ctl.commandedOutputs(drive, steer);
+    CHECK_EQ(drive, 0);
+    CHECK_EQ(steer, 0);
+}
+
+static void out_of_range_command_does_not_refresh_the_watchdog() {
+    // The whole point of rejecting rather than clamping: a sender that
+    // disagrees with us about the scale must not be able to keep the rover
+    // alive on commands we never understood.
+    RoverController ctl = freshController();
+    CHECK(sendControl(ctl, 500, 0, MODE_MANUAL, false));
+    advance(290);
+    CHECK(!ctl.watchdogTripped());
+    for (int i = 0; i < 5; ++i) sendControl(ctl, 30000, 0, MODE_MANUAL, false);
+    advance(20);
+    CHECK(ctl.watchdogTripped());
+    CHECK_EQ(ctl.lastControl().drive_cmd, 500);     // not overwritten
+}
+
+static void out_of_range_command_is_reported_as_a_protocol_error() {
+    // A stop must be explainable. A rover that halts while telemetry reads
+    // "no faults" is its own hazard.
+    RoverController ctl = freshController();
+    sendControl(ctl, 0, CMD_MIN - 1, MODE_MANUAL, false);
+    CHECK(ctl.faultWord() & FAULT_PROTOCOL_ERROR);
+    CHECK(!(ctl.faultWord() & FAULT_CRC_ERROR));    // not a corruption fault
+    CHECK(sendControl(ctl, 0, CMD_MIN, MODE_MANUAL, false));   // full scale is fine
+    CHECK(!(ctl.faultWord() & FAULT_PROTOCOL_ERROR));          // and self-clears
+}
+
 static void a_foreign_id_is_not_a_fault() {
     // Other traffic on a shared bus is normal. Flagging it would make the
     // protocol-error bit permanently on and therefore useless.
@@ -554,6 +588,9 @@ int main() {
     RUN_TEST(a_bad_crc_does_not_refresh_the_watchdog);
     RUN_TEST(foreign_can_id_does_not_refresh_the_watchdog);
     RUN_TEST(a_foreign_id_is_not_a_fault);
+    RUN_TEST(out_of_range_command_never_moves_the_rover);
+    RUN_TEST(out_of_range_command_does_not_refresh_the_watchdog);
+    RUN_TEST(out_of_range_command_is_reported_as_a_protocol_error);
     RUN_TEST(contiguous_sequence_numbers_are_healthy);
     RUN_TEST(a_sequence_gap_is_detected_and_counted);
     RUN_TEST(the_sequence_wrap_is_not_a_gap);

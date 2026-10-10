@@ -20,22 +20,26 @@ Mirrors firmware/src/rover_protocol.h. Read that file for the design
 rationale; PROTOCOL.md section 3 has the full field documentation.
 """
 
+import os
 import struct
+import sys
 
-# --- CAN identifiers. Also the bus priority: lowest id wins arbitration. ---
-CAN_ID_CONTROL       = 0x100
-CAN_ID_TELEM_DRIVE_L = 0x200
-CAN_ID_TELEM_DRIVE_R = 0x201
-CAN_ID_TELEM_POWER   = 0x202
-CAN_ID_TELEM_STATE   = 0x203
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# CAN ids, modes, frame sizes, valid command ranges and timing live in
+# rover_config.py. Re-exported here so existing callers can keep writing
+# rp.CAN_ID_CONTROL.
+from rover_config import (  # noqa: E402,F401
+    CAN_ID_CONTROL, CAN_ID_TELEM_DRIVE_L, CAN_ID_TELEM_DRIVE_R,
+    CAN_ID_TELEM_POWER, CAN_ID_TELEM_STATE,
+    MODE_DISABLED, MODE_MANUAL, MODE_AUTONOMOUS, MODE_MAX,
+    CMD_MIN, CMD_MAX, PROTOCOL_VERSION,
+)
 
 TELEM_IDS = (CAN_ID_TELEM_DRIVE_L, CAN_ID_TELEM_DRIVE_R,
              CAN_ID_TELEM_POWER, CAN_ID_TELEM_STATE)
 
-# --- operating modes ---
-MODE_DISABLED   = 0
-MODE_MANUAL     = 1
-MODE_AUTONOMOUS = 2
+# --- operating modes (values in rover_config.py) ---
 MODE_NAMES = {MODE_DISABLED: "DISABLED", MODE_MANUAL: "MANUAL",
               MODE_AUTONOMOUS: "AUTONOMOUS"}
 
@@ -109,6 +113,8 @@ CMD_AGE_UNKNOWN = 0xFFFF
 CMD_AGE_MAX     = 0xFFFE
 
 # --- frame geometry: 6 payload bytes + seq + CRC = 8 ---
+# Stated rather than derived, because the seq and CRC bytes are not in any
+# struct format. test_config_sync.py pins these to the C++ values.
 FRAME_DLC        = 8
 FRAME_PAYLOAD    = 6
 FRAME_SEQ_OFFSET = 6
@@ -132,10 +138,12 @@ DECODE_BAD_CRC       = 2
 DECODE_BAD_MODE      = 3
 DECODE_BAD_FLAGS     = 4
 DECODE_BAD_INDICATOR = 5
+DECODE_BAD_RANGE     = 6
 DECODE_NAMES = {DECODE_OK: "OK", DECODE_BAD_DLC: "BAD_DLC",
                 DECODE_BAD_CRC: "BAD_CRC", DECODE_BAD_MODE: "BAD_MODE",
                 DECODE_BAD_FLAGS: "BAD_FLAGS",
-                DECODE_BAD_INDICATOR: "BAD_INDICATOR"}
+                DECODE_BAD_INDICATOR: "BAD_INDICATOR",
+                DECODE_BAD_RANGE: "BAD_RANGE"}
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +164,16 @@ def mode_permits_motion(mode):
     """May the rover move in this mode? A WHITELIST, deliberately -- `mode` is a
     uint8, so 256 values fit where 3 are defined."""
     return mode in MOTION_MODES
+
+
+def is_valid_command(value):
+    """Is this drive/steer value inside CMD_MIN..CMD_MAX (+/-100.0%)?
+
+    Out-of-range values are rejected at decode, never clamped: clamping would
+    quietly turn a misunderstood command into full throttle. Mirrors
+    isValidCommand() in firmware/src/rover_protocol.cpp.
+    """
+    return CMD_MIN <= value <= CMD_MAX
 
 
 def is_known_indicator(indicator):
@@ -274,6 +292,9 @@ def decode_control(frame, can_id=CAN_ID_CONTROL):
     indicator = (flags & CTRL_INDICATOR_MASK) >> CTRL_INDICATOR_SHIFT
     if not is_known_indicator(indicator):
         return DECODE_BAD_INDICATOR, None
+    # Same for an out-of-range drive or steer: reject, never clamp.
+    if not (is_valid_command(drive) and is_valid_command(steer)):
+        return DECODE_BAD_RANGE, None
     return DECODE_OK, {
         "drive_cmd": drive, "steer_cmd": steer, "mode": mode,
         "stop": bool(flags & CTRL_FLAG_STOP),

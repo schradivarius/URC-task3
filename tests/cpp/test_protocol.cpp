@@ -97,6 +97,47 @@ static ControlMsg makeControl(int16_t d, int16_t s, uint8_t mode, bool stop,
     return m;
 }
 
+static void command_range_predicate_holds_at_the_boundaries() {
+    // Off by one here is the whole bug: +/-1000 is full scale and legal.
+    CHECK(isValidCommand(0));
+    CHECK(isValidCommand(CMD_MIN));
+    CHECK(isValidCommand(CMD_MAX));
+    CHECK(!isValidCommand(CMD_MIN - 1));
+    CHECK(!isValidCommand(CMD_MAX + 1));
+    CHECK(!isValidCommand(-32768));
+    CHECK(!isValidCommand(32767));
+}
+
+static void out_of_range_commands_are_rejected_at_decode() {
+    // Rejected, not clamped: clamping would quietly turn a misunderstood
+    // command into full throttle. Both fields are checked independently.
+    const int16_t bad[] = {-32768, CMD_MIN - 1, CMD_MAX + 1, 32767};
+    for (int16_t v : bad) {
+        uint8_t buf[8] = {0};
+        ControlMsg out;
+        encodeControl(makeControl(v, 0, MODE_MANUAL, false, false, false,
+                                  INDICATOR_OFF, 0), buf);
+        CHECK_EQ(decodeControl(CAN_ID_CONTROL, buf, FRAME_DLC, out),
+                 DECODE_BAD_RANGE);
+        encodeControl(makeControl(0, v, MODE_MANUAL, false, false, false,
+                                  INDICATOR_OFF, 0), buf);
+        CHECK_EQ(decodeControl(CAN_ID_CONTROL, buf, FRAME_DLC, out),
+                 DECODE_BAD_RANGE);
+    }
+}
+
+static void the_encoder_still_writes_any_int16() {
+    // Validation is the receiver's job, and the receiver is what must fail
+    // closed. The encoder stays a faithful serialiser so a test can put a
+    // hostile value on the bus.
+    uint8_t buf[8] = {0};
+    CHECK_EQ(encodeControl(makeControl(-32768, 32767, MODE_MANUAL, false,
+                                       false, false, INDICATOR_OFF, 0), buf),
+             FRAME_DLC);
+    CHECK_EQ(buf[0], 0x00); CHECK_EQ(buf[1], 0x80);   // int16 extremes still
+    CHECK_EQ(buf[2], 0xFF); CHECK_EQ(buf[3], 0x7F);   // encode little-endian
+}
+
 static void control_round_trips_every_field() {
     const ControlMsg cases[] = {
         makeControl(0, 0, MODE_DISABLED, true, false, false, INDICATOR_OFF, 0),
@@ -104,8 +145,12 @@ static void control_round_trips_every_field() {
                     INDICATOR_AUTONOMOUS, 1),
         makeControl(-1000, 1000, MODE_MANUAL, true, true, true,
                     INDICATOR_ARRIVED, 255),
-        makeControl(-32768, 32767, MODE_MANUAL, false, true, false,
-                    INDICATOR_FAULT, 128),   // int16 extremes
+        // Was the int16 extremes case. Those no longer decode -- they are
+        // outside CMD_MIN..CMD_MAX, see
+        // out_of_range_commands_are_rejected_at_decode -- so this case keeps
+        // the flag and indicator combination with in-range commands.
+        makeControl(-999, 999, MODE_MANUAL, false, true, false,
+                    INDICATOR_FAULT, 128),
         makeControl(250, -50, MODE_AUTONOMOUS, false, false, false,
                     INDICATOR_AUTONOMOUS, 64, /*c2_lost=*/true),
         makeControl(0, 0, MODE_MANUAL, true, true, true,
@@ -438,6 +483,9 @@ int main() {
     RUN_TEST(frame_crc_is_stable_for_the_same_inputs);
     RUN_TEST(seq_delta_is_correct_across_the_wrap);
     RUN_TEST(control_round_trips_every_field);
+    RUN_TEST(command_range_predicate_holds_at_the_boundaries);
+    RUN_TEST(out_of_range_commands_are_rejected_at_decode);
+    RUN_TEST(the_encoder_still_writes_any_int16);
     RUN_TEST(control_flags_are_independent);
     RUN_TEST(indicator_request_survives_alongside_flags);
     RUN_TEST(telemetry_drive_l_round_trips);

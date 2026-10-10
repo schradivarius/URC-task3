@@ -50,11 +50,13 @@ using namespace rover;
 
 // ---------------------------------------------------------------------------
 // Configuration
+//
+// Protocol and timing constants (CAN_BITRATE_HZ, HW_WATCHDOG_MS, the
+// timeouts, the CAN ids, OVER_CURRENT_CA, UNDERVOLTAGE_CV) live in
+// src/rover_config.h. Only board-specific wiring stays here.
 // ---------------------------------------------------------------------------
 
-static const uint32_t CAN_BITRATE_HZ      = 500000;   // 500 kbps
-static const uint32_t HW_WATCHDOG_MS      = 1000;     // loop must feed within
-static const int      LED_PIN             = 13;       // Teensy onboard LED
+static const int LED_PIN = 13;   // Teensy onboard LED
 // LED_PIN is a telemetry heartbeat blink ONLY. It is not the status indicator.
 //
 // TODO (hardware): the URC status light has no pin assignment and no driver
@@ -78,9 +80,6 @@ static const int      LED_PIN             = 13;       // Teensy onboard LED
 //   INDICATOR_AUTONOMOUS red
 //   INDICATOR_ARRIVED    flashing green   (this firmware owns the flash rate)
 //   INDICATOR_FAULT      yellow, solid    (placeholder -- see PROTOCOL.md 9)
-static const int16_t  OVER_CURRENT_CA     = 4000;     // 40.00 A, placeholder
-static const int16_t  UNDERVOLTAGE_CV     = 2000;     // 20.00 V, placeholder
-
 // Flip to false once real encoders / current sensing / steering feedback are
 // wired in. See readSensors() for where the real code goes.
 static const bool SIMULATE_SENSORS = true;

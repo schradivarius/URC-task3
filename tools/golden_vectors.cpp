@@ -16,6 +16,7 @@
 //   SEQDELTA|<prev>,<cur>|<delta>
 //   MODE|<value>|<known><motion>         two 0/1 digits
 //   INDICATOR|<value>|<known>
+//   RANGE|<value>|<valid>
 //   <NAME>|<args>|<frame hex>            encoded frames
 
 #include <cstdio>
@@ -63,6 +64,14 @@ int main() {
         std::printf("INDICATOR|%d|%d\n", i,
                     isKnownIndicator(static_cast<uint8_t>(i)) ? 1 : 0);
     }
+    // Command range at and around the boundaries, so the Jetson cannot think
+    // a value is sendable while the controller rejects it. Not exhaustive --
+    // the field is 16 bits -- but off by one is the whole bug here.
+    const int16_t range_cases[] = {-32768, -32767, -1002, -1001, -1000, -999,
+                                   -1, 0, 1, 999, 1000, 1001, 1002, 32766, 32767};
+    for (int16_t v : range_cases) {
+        std::printf("RANGE|%d|%d\n", v, isValidCommand(v) ? 1 : 0);
+    }
 
     // --- CONTROL ---------------------------------------------------------
     struct Ctl { int16_t d, s; uint8_t m; bool stop, abort, ret, c2; uint8_t ind, seq; };
@@ -71,8 +80,12 @@ int main() {
         {   500,  -200, MODE_MANUAL,     false, false, false, false, INDICATOR_TELEOP,     1},
         {  1000, -1000, MODE_AUTONOMOUS, false, false, false, false, INDICATOR_AUTONOMOUS, 42},
         { -1000,  1000, MODE_MANUAL,     true,  true,  true,  true,  INDICATOR_ARRIVED,  255},
-        {-32768, 32767, MODE_MANUAL,     false, false, true,  false, INDICATOR_FAULT,    128},
-        {-21846,   170, MODE_AUTONOMOUS, false, true,  false, true,  INDICATOR_OFF,        7},
+        // These two were -32768,32767 and -21846,170 before command-range
+        // validation. Both are outside CMD_MIN..CMD_MAX, so they no longer
+        // decode; the boundary itself is pinned by the RANGE table above and
+        // the extreme-int16 ENCODING by the_encoder_still_writes_any_int16.
+        {  -999,   999, MODE_MANUAL,     false, false, true,  false, INDICATOR_FAULT,    128},
+        {  -846,   170, MODE_AUTONOMOUS, false, true,  false, true,  INDICATOR_OFF,        7},
         {   250,   -50, MODE_AUTONOMOUS, false, false, false, true,  INDICATOR_AUTONOMOUS, 64},
         {     0,     0, MODE_MANUAL,     false, false, false, true,  INDICATOR_TELEOP,    65},
     };
